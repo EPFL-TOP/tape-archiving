@@ -1,0 +1,53 @@
+# tape-archive config for a jetraw-compressed dataset on the NAS.
+#
+# Prerequisites on the SCITAS-side host before running:
+#   1. Install jr CLI:    pip install jr_cli --index-url https://releases.jetraw.com
+#   2. Authenticate:      jr auth login
+#   3. Mount the NAS:     rclone mount nas_rcp: /mnt/nas_rcp ...   (run in a separate process)
+#   4. (Optional) Verify: jr destination list
+# Then:  tape-archive run configs/example-jetraw.yaml
+# load rclone on SCITAS:module load rclone 
+source:
+  mode: jetraw
+  name: 2024_12_Ece
+  # Path as known to jetraw (relative to its configured destination root).
+  jetraw_path: /home/2024_12_Ece
+
+rclone:
+  mount_path: /mnt/nas_rcp
+  remote: "nas_rcp:"
+
+jetraw:
+  # Destination name in `jr destination list`. Omit to call edit without a name.
+  destination: nas_rcp
+  # Run `jr destination edit ... --set-url <rclone.mount_path>` during precheck.
+  set_url: true
+  # Append the verify-checksum flag to `jr download`.
+  verify_checksum: true
+  # Override here if the installed jr uses a different flag spelling.
+  verify_checksum_flag: --verify-checksum-after-download-before-decompression
+
+staging:
+  # Local working dir on SCITAS. Layout:
+  #   <root>/data/<name>/      <- jr download output (decompressed)
+  #   <root>/mirror/<name>/    <- empty-file mirror + manifest.json
+  #   <root>/archives/<name>/  <- .tar.zst archives + archives.json
+  root: /scratch/tape_staging
+
+compression:
+  level: 9          # zstd 1..19; 9 is a fast/ratio sweet spot
+  threads: 0        # 0 = all cores
+  # 'subfolder' = one archive per first-level subdir
+  # 'whole'     = one archive total
+  # 'auto'      = DFS + sibling bin-packing aiming for archives <= max_size_mb
+  granularity: auto
+  target_size_mb: 1024   # soft target (auto granularity)
+  max_size_mb: 4096      # hard cap; subtrees larger than this are split
+
+mirror:
+  # Archive-level sha256 always lands in _ARCHIVE_*.json. Per-file sha256 is
+  # extra (slow on TB datasets); jr already verifies downloads.
+  per_file_checksum: false
+
+tape:
+  mount_path: /tape/group_X

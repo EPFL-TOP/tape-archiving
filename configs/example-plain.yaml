@@ -1,0 +1,51 @@
+# tape-archive config for a regular folder on the NAS (no jetraw involved).
+#
+# In plain mode we read directly from the rclone mount: there is no download
+# stage, no jr CLI involvement. tar streams from the mount, zstd compresses to
+# local staging, then the archives + mirror tree land on the tape mount.
+#
+# Prerequisites on the SCITAS-side host before running:
+#   1. Mount the NAS:  rclone mount nas_rcp: /mnt/nas_rcp ...   (in a separate process)
+# Then:  tape-archive run configs/example-plain.yaml
+
+source:
+  mode: plain
+  name: 2024_12_some_dataset
+  # Absolute path, or relative to rclone.mount_path.
+  nas_path: data/2024_12_some_dataset
+  # If true: copy from the rclone mount to <staging>/data/<name>/ with cp -r
+  # before mirror+compress. If false: tar streams directly from the mount.
+  # Streaming is faster (no double-write) but a network blip aborts the whole
+  # archive; staging needs ~2x disk but is restart-friendly.
+  stage_locally: false
+
+rclone:
+  mount_path: /mnt/nas_rcp
+  remote: "nas_rcp:"
+
+staging:
+  # Layout under <root>:
+  #   data/<name>/      (only when stage_locally=true)
+  #   mirror/<name>/    empty-file tree + manifest.json + _ARCHIVE_*.json markers
+  #   archives/<name>/  .tar.zst archives + archives.json
+  root: /scratch/tape_staging
+
+compression:
+  level: 9
+  threads: 0
+  # 'subfolder' = one archive per first-level subdir
+  # 'whole'     = one archive total
+  # 'auto'      = DFS + sibling bin-packing aiming for archives <= max_size_mb;
+  #               adjacent small siblings are bundled, big subtrees are descended.
+  granularity: auto
+  target_size_mb: 1024   # soft target (only meaningful for granularity=auto)
+  max_size_mb: 4096      # hard cap; subtrees larger than this are split
+
+mirror:
+  # For plain data there's no upstream checksum to lean on. Per-file sha256 in
+  # the manifest lets you verify individual files after a tape restore (detects
+  # bitrot). Archive-level sha256 lands in _ARCHIVE_*.json regardless.
+  per_file_checksum: false
+
+tape:
+  mount_path: /tape/group_X
