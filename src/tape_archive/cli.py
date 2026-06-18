@@ -50,6 +50,33 @@ def main(argv: list[str] | None = None) -> int:
     p_scan.add_argument("-o", "--output", help="Write to file instead of stdout")
     p_scan.add_argument("-v", "--verbose", action="store_true")
 
+    p_plan = sub.add_parser(
+        "plan",
+        help="Build an editable archive plan from a source tree (YAML + optional HTML preview).",
+    )
+    p_plan.add_argument("path", help="Source directory to plan")
+    p_plan.add_argument(
+        "--level",
+        choices=["top", "experiment", "position", "auto"],
+        default="position",
+        help="Granularity strategy (default: position).",
+    )
+    p_plan.add_argument(
+        "--position-min-size-gb", type=float, default=50.0,
+        help="position level: any leaf-ish folder >= this size becomes its own archive (default: 50).",
+    )
+    p_plan.add_argument(
+        "--target-size-gb", type=float, default=1000.0,
+        help="auto level: soft target archive size (default: 1000 = 1 TB).",
+    )
+    p_plan.add_argument(
+        "--max-size-gb", type=float, default=3000.0,
+        help="auto/position levels: hard cap; archives over this get a warning (default: 3000 = 3 TB).",
+    )
+    p_plan.add_argument("-o", "--output", default="plan.yaml", help="Write YAML plan here (default: plan.yaml)")
+    p_plan.add_argument("--preview", help="Also emit a single-file HTML preview at this path")
+    p_plan.add_argument("-v", "--verbose", action="store_true")
+
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if getattr(args, "verbose", False) else logging.INFO,
@@ -75,6 +102,28 @@ def main(argv: list[str] | None = None) -> int:
             print(f"wrote {args.output}", file=sys.stderr)
         else:
             print(text)
+        return 0
+
+    if args.cmd == "plan":
+        import yaml
+        from .plan import make_plan
+        plan = make_plan(
+            Path(args.path),
+            level=args.level,
+            position_min_size_gb=args.position_min_size_gb,
+            target_size_gb=args.target_size_gb,
+            max_size_gb=args.max_size_gb,
+        )
+        Path(args.output).write_text(yaml.safe_dump(plan, sort_keys=False, width=120))
+        print(
+            f"wrote {args.output}: {plan['total_archives']} archives, "
+            f"total {plan['total_size_bytes'] / (1 << 40):.2f} TB",
+            file=sys.stderr,
+        )
+        if args.preview:
+            from .plan_html import render_plan_html
+            render_plan_html(plan, Path(args.preview))
+            print(f"wrote {args.preview}", file=sys.stderr)
         return 0
 
     return 0

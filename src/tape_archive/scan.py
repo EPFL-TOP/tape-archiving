@@ -8,6 +8,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
+def walk_tree(root: Path) -> tuple[dict, dict]:
+    """Walk root and return (unpruned tree dict, extension totals dict).
+    Intended for reuse by plan.py and any other consumer that needs the full tree.
+    """
+    root = Path(root).resolve()
+    if not root.exists():
+        raise FileNotFoundError(root)
+    if not root.is_dir():
+        raise NotADirectoryError(root)
+    ext_totals: dict[str, dict] = defaultdict(lambda: {"count": 0, "size": 0})
+    tree = _walk(root, root, ext_totals)
+    return tree, {k: dict(v) for k, v in ext_totals.items()}
+
+
 def scan(
     root: Path,
     *,
@@ -15,24 +29,17 @@ def scan(
     candidate_size_gb: float = 10.0,
     candidate_min_files: int = 10,
 ) -> dict:
-    root = Path(root).resolve()
-    if not root.exists():
-        raise FileNotFoundError(root)
-    if not root.is_dir():
-        raise NotADirectoryError(root)
-
-    ext_totals: dict[str, dict] = defaultdict(lambda: {"count": 0, "size": 0})
-    tree = _walk(root, root, ext_totals)
+    tree, ext_totals = walk_tree(root)
     candidates = _flag_candidates(tree, int(candidate_size_gb * (1 << 30)), candidate_min_files)
     hotspots = _top_dirs_by_size(tree, n=15)
     _prune_tree(tree, max_tree_depth)
 
     return {
-        "root": str(root),
+        "root": str(Path(root).resolve()),
         "scanned_at": datetime.now(tz=timezone.utc).isoformat(),
         "total_size_bytes": tree["size_subtree"],
         "total_file_count": tree["file_count_subtree"],
-        "extensions": {k: dict(v) for k, v in ext_totals.items()},
+        "extensions": ext_totals,
         "tree": tree,
         "candidates": candidates,
         "hotspots": hotspots,

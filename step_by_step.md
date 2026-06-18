@@ -7,6 +7,7 @@ needed.
 
 
 rclone lsd hive-project02:PROJECTS-02
+rclone lsd nas_rcp:/upoates/common/UPOATES_DATA_ARCHIVES/TOTAPE
 
 
 rclone copy hive-project02:PROJECTS-02/Clement/FROM-JETRAW-TO-SCITAS-TAPE/2024_12_wscpaper /work/upoates/TO_TAPE/2024_12_wscpaper/ \
@@ -19,6 +20,20 @@ rclone copy hive-project02:PROJECTS-02/Clement/FROM-JETRAW-TO-SCITAS-TAPE/2024_1
   --stats-one-line \
   --retries 5 \
   --low-level-retries 20 
+
+rclone copy nas_rcp:/upoates/common/UPOATES_DATA_ARCHIVES/TOTAPE/Ece-thesis-paper /work/upoates/TO_TAPE/Ece-thesis-paper \
+  --transfers 16 \
+  --checkers 32 \
+  --multi-thread-streams 4 \
+  --multi-thread-cutoff 100M \
+  --progress \
+  --stats 5s \
+  --stats-one-line \
+  --retries 5 \
+  --low-level-retries 20 
+
+
+
 
 ---
 
@@ -172,7 +187,95 @@ download finishes (or you want to stop), close the session with
 
 ---
 
-## 5. Run tape-archive
+## 5. Install the `tape-archive` CLI
+
+Install into the same conda env as `jr` so it inherits the libstdcxx fix and
+LD_LIBRARY_PATH:
+
+```bash
+conda activate jetraw
+cd /path/to/tape-archiving         # wherever the repo is cloned
+pip install -e .                   # editable install; pulls in PyYAML
+
+# verify
+tape-archive --help
+tape-archive scan --help
+```
+
+### Explore a dataset before archiving
+
+`tape-archive scan` walks a directory and emits a markdown (or JSON) summary —
+extension breakdown, size hotspots, suggested archive candidates, depth-limited
+tree. Pure metadata walk, no content reads, no tmux needed.
+
+```bash
+tape-archive scan /work/upoates/2024_12_wscpaper-ToTape -o scan.md
+less scan.md
+
+# Useful flags:
+#   --candidate-size-gb N     threshold for flagging a folder as tar-worthy (default 10)
+#   --candidate-min-files N   min file count for a candidate (default 10)
+#   --max-tree-depth N        cap the printed tree depth (default 4)
+#   --format json -o scan.json   machine-readable
+```
+
+Use the scan output to decide archive granularity before running the full
+pipeline.
+
+### Build an archive plan (Phase A)
+
+`tape-archive plan` walks the tree and produces an **editable YAML plan** plus
+a **single-file HTML preview**. Run it with different `--level` flags to
+compare strategies side-by-side.
+
+```bash
+mkdir -p plans
+
+# One archive per top-level folder (3 archives for wscpaper):
+tape-archive plan /work/upoates/TO_TAPE/2024_12_wscpaper \
+  --level top \
+  -o plans/top.yaml --preview plans/top.html
+
+# One archive per experiment (~10 archives, 600 GB – 3 TB each):
+tape-archive plan /work/upoates/TO_TAPE/2024_12_wscpaper \
+  --level experiment \
+  -o plans/experiment.yaml --preview plans/experiment.html
+
+# One archive per leaf-ish movie folder + per-experiment metadata bundle
+# (~33 archives, 500 GB – 1 TB each); recommended starting point:
+tape-archive plan /work/upoates/TO_TAPE/2024_12_wscpaper \
+  --level position \
+  --position-min-size-gb 50 \
+  --max-size-gb 3000 \
+  -o plans/position.yaml --preview plans/position.html
+
+# Pure size-based bin-packing:
+tape-archive plan /work/upoates/TO_TAPE/2024_12_wscpaper \
+  --level auto \
+  --target-size-gb 1000 --max-size-gb 3000 \
+  -o plans/auto.yaml --preview plans/auto.html
+```
+
+Then copy the HTML previews off SCITAS to wherever you can click on them:
+
+```bash
+# from your local machine:
+scp scitas:/work/upoates/.../plans/*.html ~/Downloads/
+open ~/Downloads/position.html
+```
+
+The preview shows: the archive table (sortable by size), a clickable tree with
+each directory tagged with the archive it belongs to, and the raw YAML at the
+bottom for reference. Yellow rows / orange badges flag archives that exceed
+`--max-size-gb` (review and decide whether to split).
+
+When the chosen plan looks right, edit the YAML (rename archives, move members
+between archives, merge/split) and we'll feed it to the compress stage in
+Phase B.
+
+---
+
+## 6. Run tape-archive
 
 Edit [configs/example-jetraw.yaml](configs/example-jetraw.yaml):
 
