@@ -297,12 +297,114 @@ bottom for reference. Yellow rows / orange badges flag archives that exceed
 `--max-size-gb` (review and decide whether to split).
 
 When the chosen plan looks right, edit the YAML (rename archives, move members
-between archives, merge/split) and we'll feed it to the compress stage in
-Phase B.
+between archives, merge/split) and feed it to the compress stage.
+
+### Build the archives (Phase B)
+
+`tape-archive compress` ingests `plan.yaml`, reads every source file exactly
+once (computing SHA-256 + zstd in the same pass), and writes a `.tar` per
+archive plus per-archive JSON manifests and a browsable catalog HTML.
+
+```bash
+tmux new -s tape-compress    # long-running for TB-scale; survive SSH drop
+conda activate jetraw
+cd /home/helsens/tape-archiving
+
+tape-archive compress plan.yaml \
+  -o /scratch/helsens/tape_output/Ece-thesis-paper \
+  --zstd-level 3            # 1 = fastest, 22 = best ratio; 3 is the sweet spot
+  -v
+```
+
+Output layout under `-o`:
+
+```text
+tape_output/Ece-thesis-paper/
+├── plan.yaml                # copy of the input plan (traceability)
+├── archives/
+│   ├── 210131ablation.tar   # plain tar; each entry is <orig-path>.zst
+│   ├── 210225ablation.tar
+│   └── …                    # one per archive in plan.yaml
+├── manifests/
+│   ├── 210131ablation.json  # per-archive manifest (the on-disk catalog)
+│   └── …
+└── catalog.html             # single-file browsable catalog
+```
+
+What's inside each `.tar`:
+
+- Every source file as its own zstd-compressed entry, named `<original-path>.zst`.
+- `_MANIFEST.json` — the per-file manifest bundled inside the tar (everything
+  except the self-referential archive sha256).
+
+What's inside each on-disk manifest (`manifests/<name>.json`):
+
+- `archive_sha256` — the SHA-256 of the .tar file (for tape bit-rot detection)
+- `archive_size_bytes` — the .tar size
+- `files: [{path, size_bytes, sha256, compressed_bytes, mtime}, …]` — per-file
+  details for every member, including the SHA-256 of the **original
+  (uncompressed) bytes**. This is what you compare against after a tape restore.
+
+**Where the checksums live (you asked):**
+
+- Primary: `manifests/*.json` on disk, separate from the tape. Back this up
+  off-SCITAS — scp it to HIVE, to your Mac, to a git LFS repo, whatever.
+- Bundled: `_MANIFEST.json` inside each `.tar`. Survives if the on-disk
+  manifests are lost — restore the tar and read it.
+
+### Restore-time verification (for later, when you actually pull from tape)
+
+```bash
+# Extract one archive from tape:
+tar -xf 210131ablation.tar -C /restore-target/
+
+# Verify per-file sha256s against the bundled manifest:
+python3 - <<'PY'
+import tarfile, json, hashlib, zstandard, sys
+from pathlib import Path
+restore = Path("/restore-target")
+m = json.loads((restore / "_MANIFEST.json").read_text())
+bad = 0
+for f in m["files"]:
+    zst = restore / (f["path"] + ".zst")
+    data = zstandard.ZstdDecompressor().decompress(zst.read_bytes())
+    sha = hashlib.sha256(data).hexdigest()
+    if sha != f["sha256"]:
+        print("MISMATCH:", f["path"]); bad += 1
+print(f"checked {len(m['files'])} files, {bad} bad")
+sys.exit(1 if bad else 0)
+PY
+```
+
+(We'll formalise that into a `tape-archive verify` subcommand once you're ready
+to actually pull from tape.)
+
+### Browsing the catalog
+
+Copy `catalog.html` off SCITAS — it's self-contained, no server needed:
+
+```bash
+# from your local machine:
+scp scitas:/scratch/helsens/tape_output/Ece-thesis-paper/catalog.html ~/Downloads/
+open ~/Downloads/catalog.html
+```
+
+What biologists see: clickable tree of every original file, with size,
+SHA-256 (truncated; hover the full one is shown in tooltip), and a green
+badge naming the archive that holds it. Clicking the badge highlights the
+archive on the right panel (its tape filename, full sha256, size, file count,
+compression ratio). A filter box at the top searches by filename, path, or
+sha256.
+
+To regenerate the catalog after changes (e.g., you rebuilt one archive):
+
+```bash
+tape-archive catalog /scratch/helsens/tape_output/Ece-thesis-paper
+```
 
 ---
 
-## 6. Run tape-archive
+## 7. Run tape-archive (jetraw end-to-end pipeline, legacy)
 
 Edit [configs/example-jetraw.yaml](configs/example-jetraw.yaml):
 

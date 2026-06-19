@@ -89,6 +89,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_planner.add_argument("-v", "--verbose", action="store_true")
 
+    p_compress = sub.add_parser(
+        "compress",
+        help="Ingest a plan.yaml and build the archives + per-file manifests + catalog HTML.",
+    )
+    p_compress.add_argument("plan", help="Path to plan.yaml")
+    p_compress.add_argument("-o", "--output", required=True, help="Output directory for archives/, manifests/, catalog.html")
+    p_compress.add_argument("--source-root", help="Override source_root from plan.yaml (handy when paths differ between hosts)")
+    p_compress.add_argument("--zstd-level", type=int, default=3, help="zstd compression level 1-22 (default: 3)")
+    p_compress.add_argument("--archive", action="append", help="Only build this archive (repeatable). Default: all in plan.")
+    p_compress.add_argument("--force", action="store_true", help="Rebuild archives even when their manifest already exists")
+    p_compress.add_argument("--no-catalog", action="store_true", help="Skip catalog HTML generation at the end")
+    p_compress.add_argument("-v", "--verbose", action="store_true")
+
+    p_catalog = sub.add_parser(
+        "catalog",
+        help="(Re)generate the browsable catalog HTML from existing manifests.",
+    )
+    p_catalog.add_argument("output_dir", help="Output directory containing manifests/ subdir")
+    p_catalog.add_argument("-o", "--output", default=None, help="Output HTML path (default: <output_dir>/catalog.html)")
+    p_catalog.add_argument("-v", "--verbose", action="store_true")
+
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if getattr(args, "verbose", False) else logging.INFO,
@@ -143,6 +164,45 @@ def main(argv: list[str] | None = None) -> int:
         out = Path(args.output)
         render_planner(Path(args.path), out)
         print(f"wrote {out} ({out.stat().st_size / 1024:.1f} KB)", file=sys.stderr)
+        return 0
+
+    if args.cmd == "compress":
+        import shutil
+        import yaml
+        from .archive_builder import build_all
+        from .catalog_html import render_catalog
+
+        plan_path = Path(args.plan)
+        plan = yaml.safe_load(plan_path.read_text())
+        source_root = Path(args.source_root or plan["source_root"]).resolve()
+        if not source_root.is_dir():
+            raise SystemExit(f"source_root does not exist or is not a directory: {source_root}")
+
+        out_dir = Path(args.output).resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # Copy plan into the output for traceability
+        shutil.copy2(plan_path, out_dir / "plan.yaml")
+
+        build_all(
+            plan,
+            source_root,
+            out_dir,
+            zstd_level=args.zstd_level,
+            force=args.force,
+            only=args.archive,
+        )
+        if not args.no_catalog:
+            html_out = out_dir / "catalog.html"
+            render_catalog(out_dir, html_out)
+            print(f"wrote {html_out}", file=sys.stderr)
+        return 0
+
+    if args.cmd == "catalog":
+        from .catalog_html import render_catalog
+        out_dir = Path(args.output_dir)
+        html_out = Path(args.output) if args.output else (out_dir / "catalog.html")
+        render_catalog(out_dir, html_out)
+        print(f"wrote {html_out}", file=sys.stderr)
         return 0
 
     return 0

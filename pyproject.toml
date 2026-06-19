@@ -7,7 +7,7 @@ name = "tape-archive"
 version = "0.1.0"
 description = "Move jetraw-compressed data from EPFL NAS RCP to SCITAS tape"
 requires-python = ">=3.10"
-dependencies = ["PyYAML>=6.0"]
+dependencies = ["PyYAML>=6.0", "zstandard>=0.22"]
 
 [project.scripts]
 tape-archive = "tape_archive.cli:main"
