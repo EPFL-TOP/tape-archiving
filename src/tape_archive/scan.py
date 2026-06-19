@@ -8,9 +8,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-def walk_tree(root: Path) -> tuple[dict, dict]:
+def walk_tree(root: Path, *, with_files: bool = False) -> tuple[dict, dict]:
     """Walk root and return (unpruned tree dict, extension totals dict).
     Intended for reuse by plan.py and any other consumer that needs the full tree.
+
+    If ``with_files`` is True, each directory node also carries a ``files`` list
+    of ``{name, size}`` dicts for the planner UI to display.
     """
     root = Path(root).resolve()
     if not root.exists():
@@ -18,7 +21,7 @@ def walk_tree(root: Path) -> tuple[dict, dict]:
     if not root.is_dir():
         raise NotADirectoryError(root)
     ext_totals: dict[str, dict] = defaultdict(lambda: {"count": 0, "size": 0})
-    tree = _walk(root, root, ext_totals)
+    tree = _walk(root, root, ext_totals, with_files=with_files)
     return tree, {k: dict(v) for k, v in ext_totals.items()}
 
 
@@ -46,7 +49,7 @@ def scan(
     }
 
 
-def _walk(node_path: Path, root: Path, ext_totals: dict) -> dict:
+def _walk(node_path: Path, root: Path, ext_totals: dict, *, with_files: bool = False) -> dict:
     rel = node_path.relative_to(root)
     rel_s = "." if str(rel) == "." else rel.as_posix()
     node = {
@@ -61,6 +64,8 @@ def _walk(node_path: Path, root: Path, ext_totals: dict) -> dict:
         "largest_file": None,
         "children": [],
     }
+    if with_files:
+        node["files"] = []
     try:
         entries = list(os.scandir(node_path))
     except (PermissionError, OSError):
@@ -71,7 +76,7 @@ def _walk(node_path: Path, root: Path, ext_totals: dict) -> dict:
             if e.is_symlink():
                 continue
             if e.is_dir(follow_symlinks=False):
-                child = _walk(Path(e.path), root, ext_totals)
+                child = _walk(Path(e.path), root, ext_totals, with_files=with_files)
                 node["children"].append(child)
                 node["subdir_count"] += 1
                 node["size_subtree"] += child["size_subtree"]
@@ -90,6 +95,8 @@ def _walk(node_path: Path, root: Path, ext_totals: dict) -> dict:
                 ext_totals[ext]["size"] += sz
                 if node["largest_file"] is None or sz > node["largest_file"]["size"]:
                     node["largest_file"] = {"name": e.name, "size": sz}
+                if with_files:
+                    node["files"].append({"name": e.name, "size": sz})
         except OSError:
             continue
     return node

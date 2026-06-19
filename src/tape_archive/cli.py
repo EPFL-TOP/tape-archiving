@@ -77,6 +77,18 @@ def main(argv: list[str] | None = None) -> int:
     p_plan.add_argument("--preview", help="Also emit a single-file HTML preview at this path")
     p_plan.add_argument("-v", "--verbose", action="store_true")
 
+    p_planner = sub.add_parser(
+        "planner",
+        help="Build an interactive HTML page: browse the tree, click folders "
+             "to mark archive roots, click Download to get plan.yaml.",
+    )
+    p_planner.add_argument("path", help="Source directory to plan")
+    p_planner.add_argument(
+        "-o", "--output", default="planner.html",
+        help="Write the interactive HTML here (default: planner.html)",
+    )
+    p_planner.add_argument("-v", "--verbose", action="store_true")
+
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if getattr(args, "verbose", False) else logging.INFO,
@@ -124,6 +136,13 @@ def main(argv: list[str] | None = None) -> int:
             from .plan_html import render_plan_html
             render_plan_html(plan, Path(args.preview))
             print(f"wrote {args.preview}", file=sys.stderr)
+        return 0
+
+    if args.cmd == "planner":
+        from .planner_ui import render_planner
+        out = Path(args.output)
+        render_planner(Path(args.path), out)
+        print(f"wrote {out} ({out.stat().st_size / 1024:.1f} KB)", file=sys.stderr)
         return 0
 
     return 0

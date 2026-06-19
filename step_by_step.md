@@ -222,11 +222,38 @@ less scan.md
 Use the scan output to decide archive granularity before running the full
 pipeline.
 
-### Build an archive plan (Phase A)
+### Build an archive plan interactively (Phase A, recommended)
+
+`tape-archive planner` walks the tree and emits a **single self-contained HTML
+file** with the full folder + file listing. Open it in a browser; click ☐ to
+mark folders as archive roots; tweak names; click **Download plan.yaml**.
+
+```bash
+tape-archive planner /work/upoates/TO_TAPE/2024_12_wscpaper -o planner.html
+# scp to wherever you can open it:
+scp scitas:/path/to/planner.html ~/Downloads/
+open ~/Downloads/planner.html       # or open in any browser
+```
+
+What the page gives you:
+
+- Browsable tree with every folder and file, sizes shown inline.
+- Checkbox per folder ☐ → marks it as an archive root.
+- Quick-start preset buttons ("Mark all at depth 1/2/3") to seed the selection,
+  then refine by clicking individual folders.
+- Right sidebar: live list of selected archives with editable names, sizes,
+  and the carved-out sub-archives ("excludes").
+- Sub-archives are handled automatically: if you mark `foo/` and also `foo/bar/`,
+  `foo`'s archive will exclude `foo/bar` and `foo/bar` becomes its own archive.
+- Selection persists in `localStorage` per source root, so you can close the
+  tab and come back to it.
+- **Download plan.yaml** → emits a YAML the compress stage will ingest.
+
+### Build an archive plan from a heuristic (legacy, useful as a starting point)
 
 `tape-archive plan` walks the tree and produces an **editable YAML plan** plus
-a **single-file HTML preview**. Run it with different `--level` flags to
-compare strategies side-by-side.
+a **single-file HTML preview**. Useful if you want a non-interactive starting
+point, but the interactive `planner` is the recommended path now.
 
 ```bash
 mkdir -p plans
