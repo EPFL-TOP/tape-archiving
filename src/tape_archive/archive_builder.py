@@ -279,6 +279,70 @@ def build_all(
     return manifests
 
 
+def write_collection_summary(output_dir: Path, manifests: list[dict], source_root: Path) -> Path:
+    """Write summary.json — collection-level metadata used by the master index."""
+    summary = {
+        "name": output_dir.name,
+        "compressed_at": _iso_now(),
+        "source_root": str(source_root),
+        "archive_count": len(manifests),
+        "file_count": sum(m.get("file_count", 0) for m in manifests),
+        "source_bytes": sum(m.get("total_uncompressed_bytes", 0) for m in manifests),
+        "tape_bytes": sum(m.get("archive_size_bytes", 0) for m in manifests),
+        "compressed_bytes": sum(m.get("total_compressed_bytes", 0) for m in manifests),
+        "archives": [
+            {
+                "name": m["archive"].removesuffix(".tar"),
+                "sha256": m.get("archive_sha256", ""),
+                "size_bytes": m.get("archive_size_bytes", 0),
+                "file_count": m.get("file_count", 0),
+                "source_bytes": m.get("total_uncompressed_bytes", 0),
+                "compressed_bytes": m.get("total_compressed_bytes", 0),
+            }
+            for m in manifests
+        ],
+    }
+    path = output_dir / "summary.json"
+    path.write_text(json.dumps(summary, indent=2))
+    return path
+
+
+def verify_archives(archives_dir: Path, manifests_dir: Path) -> tuple[int, int, list[str]]:
+    """Re-hash every .tar in archives_dir and compare against its manifest.
+
+    Returns (checked_count, failure_count, failures).
+    """
+    failures: list[str] = []
+    checked = 0
+    for manifest_path in sorted(manifests_dir.glob("*.json")):
+        manifest = json.loads(manifest_path.read_text())
+        expected_sha = manifest.get("archive_sha256")
+        if not expected_sha:
+            continue
+        tar_name = manifest["archive"]
+        tar_path = archives_dir / tar_name
+        if not tar_path.exists():
+            failures.append(f"{tar_name}: missing on disk")
+            checked += 1
+            continue
+        actual = _sha256_file(tar_path)
+        checked += 1
+        if actual != expected_sha:
+            failures.append(f"{tar_name}: sha256 mismatch ({actual} != {expected_sha})")
+            log.error("BAD %s: sha256 mismatch", tar_name)
+        else:
+            log.info("OK  %s (%s)", tar_name, _fmt_size(tar_path.stat().st_size))
+    return checked, len(failures), failures
+
+
+def _sha256_file(path: Path, bufsize: int = 1 << 20) -> str:
+    sha = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(bufsize), b""):
+            sha.update(chunk)
+    return sha.hexdigest()
+
+
 def _iso_now() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
 

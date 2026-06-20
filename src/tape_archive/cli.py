@@ -110,6 +110,41 @@ def main(argv: list[str] | None = None) -> int:
     p_catalog.add_argument("-o", "--output", default=None, help="Output HTML path (default: <output_dir>/catalog.html)")
     p_catalog.add_argument("-v", "--verbose", action="store_true")
 
+    p_index = sub.add_parser(
+        "index",
+        help="(Re)generate the master HTML index that links every collection's catalog.",
+    )
+    p_index.add_argument("catalog_root", help="Parent directory holding one subfolder per collection")
+    p_index.add_argument("-o", "--output", default=None, help="Output HTML path (default: <catalog_root>/index.html)")
+    p_index.add_argument("-v", "--verbose", action="store_true")
+
+    p_verify = sub.add_parser(
+        "verify",
+        help="Re-hash every .tar in an archives dir and compare against its manifest's archive_sha256.",
+    )
+    p_verify.add_argument("output_dir", nargs="?",
+                          help="A tape-archive compress output dir (with archives/ and manifests/ subdirs)")
+    p_verify.add_argument("--archives", help="Archives dir to check (defaults to <output_dir>/archives)")
+    p_verify.add_argument("--manifests", help="Manifests dir (defaults to <output_dir>/manifests)")
+    p_verify.add_argument("-v", "--verbose", action="store_true")
+
+    p_ship = sub.add_parser(
+        "ship",
+        help="Ship one collection's archives from NAS to tape via /work (rclone copy → verify → rsync → verify → delete).",
+    )
+    p_ship.add_argument("--nas", required=True,
+                        help="rclone-style path to the collection on NAS, e.g. nas_rcp:upoates/common/lab-archives-catalog/Ece-thesis-movies")
+    p_ship.add_argument("--work", required=True, help="Local staging dir on /work")
+    p_ship.add_argument("--tape", required=True, help="Local destination on the tape mount")
+    p_ship.add_argument("--archive", action="append",
+                        help="Only ship this archive (without .tar). Repeatable. Default: every archive in the collection's summary.json.")
+    p_ship.add_argument("--batch-budget-gb", type=float,
+                        help="Refuse to start an archive that would push /work past this many GB. Safety check for the /work quota.")
+    p_ship.add_argument("--rclone-transfers", type=int, default=4)
+    p_ship.add_argument("--rclone-checkers", type=int, default=8)
+    p_ship.add_argument("--dry-run", action="store_true")
+    p_ship.add_argument("-v", "--verbose", action="store_true")
+
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.DEBUG if getattr(args, "verbose", False) else logging.INFO,
@@ -169,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "compress":
         import shutil
         import yaml
-        from .archive_builder import build_all
+        from .archive_builder import build_all, write_collection_summary
         from .catalog_html import render_catalog
 
         plan_path = Path(args.plan)
@@ -180,10 +215,9 @@ def main(argv: list[str] | None = None) -> int:
 
         out_dir = Path(args.output).resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
-        # Copy plan into the output for traceability
         shutil.copy2(plan_path, out_dir / "plan.yaml")
 
-        build_all(
+        manifests = build_all(
             plan,
             source_root,
             out_dir,
@@ -191,6 +225,18 @@ def main(argv: list[str] | None = None) -> int:
             force=args.force,
             only=args.archive,
         )
+        # Aggregate summary (use all on-disk manifests, not just freshly-built ones,
+        # so summary reflects the full collection even when --archive limits this run).
+        import json as _json
+        all_manifests = []
+        for p in sorted((out_dir / "manifests").glob("*.json")):
+            try:
+                all_manifests.append(_json.loads(p.read_text()))
+            except _json.JSONDecodeError:
+                continue
+        if all_manifests:
+            summary_path = write_collection_summary(out_dir, all_manifests, source_root)
+            print(f"wrote {summary_path}", file=sys.stderr)
         if not args.no_catalog:
             html_out = out_dir / "catalog.html"
             render_catalog(out_dir, html_out)
@@ -204,6 +250,46 @@ def main(argv: list[str] | None = None) -> int:
         render_catalog(out_dir, html_out)
         print(f"wrote {html_out}", file=sys.stderr)
         return 0
+
+    if args.cmd == "index":
+        from .master_html import render_master_index
+        catalog_root = Path(args.catalog_root)
+        html_out = Path(args.output) if args.output else (catalog_root / "index.html")
+        render_master_index(catalog_root, html_out)
+        print(f"wrote {html_out}", file=sys.stderr)
+        return 0
+
+    if args.cmd == "verify":
+        from .archive_builder import verify_archives
+        if args.archives:
+            archives = Path(args.archives)
+            manifests = Path(args.manifests) if args.manifests else None
+            if manifests is None:
+                raise SystemExit("--manifests is required when --archives is given")
+        else:
+            if not args.output_dir:
+                raise SystemExit("provide either output_dir or --archives/--manifests")
+            archives = Path(args.output_dir) / "archives"
+            manifests = Path(args.output_dir) / "manifests"
+        checked, fails, failures = verify_archives(archives, manifests)
+        print(f"checked {checked} archive(s), {fails} failure(s)", file=sys.stderr)
+        for line in failures:
+            print(f"  FAIL: {line}", file=sys.stderr)
+        return 0 if fails == 0 else 1
+
+    if args.cmd == "ship":
+        from .ship import ship
+        results = ship(
+            args.nas,
+            Path(args.work),
+            Path(args.tape),
+            only=args.archive,
+            batch_budget_gb=args.batch_budget_gb,
+            rclone_transfers=args.rclone_transfers,
+            rclone_checkers=args.rclone_checkers,
+            dry_run=args.dry_run,
+        )
+        return 0 if not results["failed"] else 1
 
     return 0
 

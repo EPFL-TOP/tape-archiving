@@ -402,6 +402,167 @@ To regenerate the catalog after changes (e.g., you rebuilt one archive):
 tape-archive catalog /scratch/helsens/tape_output/Ece-thesis-paper
 ```
 
+### Pipeline B — strategy with 20 TB /work quota on SCITAS
+
+If a dataset is bigger than /work can hold all at once, compress on a local
+server (HIVE, your workstation, anything with enough disk), push the result
+to the NAS, then ship to tape in chunks from SCITAS. The `ship` subcommand
+walks one archive at a time, never letting /work get full.
+
+**On the local server** (no SCITAS quota concerns here):
+
+```bash
+# 1. Compress a subset of the plan (use --archive flags to chunk it):
+tape-archive compress plan_ECE.yaml \
+  -o /local/staging/Ece-thesis-movies \
+  --archive 210131ablation --archive 210225ablation \
+  --zstd-level 3 -v
+
+# 2. Push the compressed output to the NAS so SCITAS can pull it:
+rclone copy /local/staging/Ece-thesis-movies \
+  nas_rcp:upoates/common/lab-archives-catalog/Ece-thesis-movies \
+  --transfers 4 --progress
+
+# 3. Loop: compress the next subset, push, repeat until the full plan is on NAS.
+#    `summary.json` on NAS auto-aggregates across runs.
+```
+
+**On SCITAS** (inside tmux — long running, walks one archive at a time):
+
+```bash
+tmux new -s ship-ECE
+conda activate jetraw      # or your tape-archive env
+module load rclone
+
+tape-archive ship \
+  --nas nas_rcp:upoates/common/lab-archives-catalog/Ece-thesis-movies \
+  --work /work/upoates/ship/Ece-thesis-movies \
+  --tape /archive/upoates/lab-archives/Ece-thesis-movies \
+  --batch-budget-gb 17000 \
+  -v
+```
+
+What `ship` does, per archive listed in the collection's `summary.json`:
+
+1. If the tar already sits on `--tape` with the right sha256 → skip.
+2. `rclone copy` the tar + its manifest from NAS into `--work`.
+3. Hash the tar on `--work`, compare to manifest. Mismatch → fail loudly, leave tar in `--work` for inspection.
+4. `rsync` the tar to `--tape`.
+5. Hash on `--tape`, compare to manifest. Mismatch → leave tape copy alone, leave /work copy, fail.
+6. Delete the tar from `--work` to free quota space.
+
+Resumable: every step verifies sha256 before removing anything, and a tar already on tape with the right sha256 is auto-skipped. Re-run the same command after an interruption.
+
+`--archive NAME` (repeatable) limits the run to specific archives if you want to ship one at a time. `--batch-budget-gb` refuses to start an archive that would push /work past the limit — useful as a defensive cap so you don't hit the quota mid-rsync.
+
+**After `ship` completes** — NAS-side cleanup is on you (per our agreement). Once everything has landed on tape and `tape-archive verify --archives <tape> --manifests <local-catalog>/manifests` passes, you can delete `archives/*.tar` from NAS. The `manifests/`, `catalog.html`, `plan.yaml`, `summary.json` stay on NAS as the long-term catalog.
+
+**Regenerate the master index** (now walks recursively, finds nested collections):
+
+```bash
+# Local catalog mirror you've been syncing from NAS, OR a freshly-pulled copy:
+tape-archive index /local/catalog_mirror
+rclone copy /local/catalog_mirror/index.html \
+  nas_rcp:upoates/common/lab-archives-catalog/
+```
+
+The master `index.html` will show each collection by its full path under
+`lab-archives-catalog/`, so `Ece-thesis-movies` and
+`group_alpha/project_beta/wscpaper` both appear as distinct cards.
+
+---
+
+### Ship one collection: SCITAS → tape + NAS (legacy / single-server flow)
+
+Once a collection is compressed and verified, split it: heavy `.tar` files go
+to tape, the catalog + manifests stay on the NAS where biologists can browse.
+
+Pick paths once at the top:
+
+```bash
+NAME=Ece-thesis-paper
+SRC=/scratch/helsens/tape_output/$NAME            # compress output on SCITAS
+TAPE=/archive/upoates/lab-archives/$NAME           # tape mount destination
+NAS=/path/to/nas/lab-archives-catalog/$NAME        # NAS catalog destination
+```
+
+```bash
+# 1. Verify the archives on /scratch match their manifests (catches anything
+#    that went wrong during compression):
+tape-archive verify "$SRC"
+
+# 2. Copy .tar files to tape. rsync (not mv) so a failure mid-copy leaves
+#    the source intact:
+mkdir -p "$TAPE"
+rsync -av --progress "$SRC/archives/" "$TAPE/"
+
+# 3. Re-verify on the tape side, against the same manifests:
+tape-archive verify --archives "$TAPE" --manifests "$SRC/manifests"
+
+# 4. Copy the catalog assets (everything EXCEPT archives/) to the NAS:
+mkdir -p "$NAS"
+rsync -av \
+  "$SRC/catalog.html" "$SRC/plan.yaml" "$SRC/summary.json" \
+  "$SRC/manifests" \
+  "$NAS/"
+
+# 5. Regenerate the master index on the NAS so this collection appears:
+tape-archive index "$(dirname "$NAS")" -o "$(dirname "$NAS")/index.html"
+
+# 6. (Only after both verifies pass and the index is regenerated) reclaim
+#    scratch space by deleting the local .tar copies:
+rm -rf "$SRC/archives"
+# Keep the rest of $SRC around if you like; it's redundant with the NAS copy.
+```
+
+After step 5, biologists open `index.html` on the NAS and see a card for every
+collection. Click → that collection's `catalog.html` → browse files and find
+the tape archive name they need to restore.
+
+NAS layout after a few collections:
+
+```text
+/path/to/nas/lab-archives-catalog/
+├── index.html                       ← master page, lists every collection
+├── 2024_12_wscpaper/
+│   ├── catalog.html
+│   ├── plan.yaml
+│   ├── summary.json
+│   └── manifests/*.json
+├── Ece-thesis-paper/
+│   ├── catalog.html
+│   ├── ...
+└── …
+```
+
+Tape layout (parallel structure, just the `.tar` files):
+
+```text
+/archive/upoates/lab-archives/
+├── 2024_12_wscpaper/
+│   ├── 0001_top_level_dir.tar
+│   └── ...
+├── Ece-thesis-paper/
+│   ├── 210131ablation.tar
+│   ├── 210225ablation.tar
+│   └── ...
+└── …
+```
+
+### Disaster-recovery story (worth knowing)
+
+- **Lose the NAS catalog** → every `.tar` on tape contains its own
+  `_MANIFEST.json` (per-file sha256s). Restore one tar, read manifest, verify.
+- **Lose a tape archive** → the per-file sha256s in the NAS manifest still
+  exist; you know exactly what was lost and can re-derive a recovery plan.
+- **Lose both** → the bundled `_MANIFEST.json` inside any other tar also names
+  its archive's contents, so neighbouring tapes still tell you what was where.
+
+### Adding another collection later
+
+Same recipe with a different `$NAME` / plan. After step 5, the master index
+will list the new card alongside the existing ones; nothing else changes.
+
 ---
 
 ## 7. Run tape-archive (jetraw end-to-end pipeline, legacy)
