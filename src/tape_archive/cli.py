@@ -168,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         text = to_json(result) if args.format == "json" else to_markdown(result)
         if args.output:
-            Path(args.output).write_text(text)
+            Path(args.output).write_text(text, encoding="utf-8")
             print(f"wrote {args.output}", file=sys.stderr)
         else:
             print(text)
@@ -184,7 +184,7 @@ def main(argv: list[str] | None = None) -> int:
             target_size_gb=args.target_size_gb,
             max_size_gb=args.max_size_gb,
         )
-        Path(args.output).write_text(yaml.safe_dump(plan, sort_keys=False, width=120))
+        Path(args.output).write_text(yaml.safe_dump(plan, sort_keys=False, width=120), encoding="utf-8")
         print(
             f"wrote {args.output}: {plan['total_archives']} archives, "
             f"total {plan['total_size_bytes'] / (1 << 40):.2f} TB",
@@ -210,7 +210,7 @@ def main(argv: list[str] | None = None) -> int:
         from .catalog_html import render_catalog
 
         plan_path = Path(args.plan)
-        plan = yaml.safe_load(plan_path.read_text())
+        plan = yaml.safe_load(plan_path.read_text(encoding="utf-8"))
         source_root = Path(args.source_root or plan["source_root"]).resolve()
         if not source_root.is_dir():
             raise SystemExit(f"source_root does not exist or is not a directory: {source_root}")
@@ -234,7 +234,7 @@ def main(argv: list[str] | None = None) -> int:
         all_manifests = []
         for p in sorted((out_dir / "manifests").glob("*.json")):
             try:
-                all_manifests.append(_json.loads(p.read_text()))
+                all_manifests.append(_json.loads(p.read_text(encoding="utf-8")))
             except _json.JSONDecodeError:
                 continue
         if all_manifests:

@@ -25,7 +25,7 @@ def render_planner(source_root: Path, output_path: Path) -> None:
     doc = doc.replace("__TREE_DATA_JSON__", tree_json)
     doc = doc.replace("__SOURCE_ROOT__", html.escape(str(source_root)))
     doc = doc.replace("__GENERATED_AT__", datetime.now(timezone.utc).isoformat())
-    output_path.write_text(doc)
+    output_path.write_text(doc, encoding="utf-8")
 
 
 _HTML = r"""<!doctype html>

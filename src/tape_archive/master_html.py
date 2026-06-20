@@ -32,7 +32,7 @@ def render_master_index(catalog_root: Path, output_path: Path) -> None:
     doc = doc.replace("__COLLECTIONS_JSON__", json_data)
     doc = doc.replace("__CATALOG_ROOT__", html.escape(str(catalog_root)))
     doc = doc.replace("__GENERATED_AT__", datetime.now(tz=timezone.utc).isoformat())
-    output_path.write_text(doc)
+    output_path.write_text(doc, encoding="utf-8")
 
 
 def _scan_collections(catalog_root: Path) -> list[dict]:
@@ -61,7 +61,7 @@ def _load_or_build_summary(coll_dir: Path) -> dict | None:
     summary_path = coll_dir / "summary.json"
     if summary_path.exists():
         try:
-            return json.loads(summary_path.read_text())
+            return json.loads(summary_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             pass
     # Fallback: synthesise from manifests/
@@ -71,7 +71,7 @@ def _load_or_build_summary(coll_dir: Path) -> dict | None:
     manifests = []
     for p in sorted(manifests_dir.glob("*.json")):
         try:
-            manifests.append(json.loads(p.read_text()))
+            manifests.append(json.loads(p.read_text(encoding="utf-8")))
         except json.JSONDecodeError:
             continue
     if not manifests:

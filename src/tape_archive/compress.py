@@ -169,7 +169,7 @@ def _write_archive_markers(mirror_dir: Path, results: list[dict], source_dir: Pa
             if member_mirror in roots_seen:
                 continue
             roots_seen.add(member_mirror)
-            (member_mirror / marker_name).write_text(json.dumps(payload, indent=2))
+            (member_mirror / marker_name).write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def compress_archives(
@@ -229,7 +229,7 @@ def compress_archives(
             "file_count": file_count,
         })
     if not dry_run:
-        (archive_dir / "archives.json").write_text(json.dumps(results, indent=2))
+        (archive_dir / "archives.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
         if mirror_dir is not None:
             _write_archive_markers(mirror_dir, results, source_dir)
     return results

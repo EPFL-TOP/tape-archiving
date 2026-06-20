@@ -36,7 +36,7 @@ def render_catalog(output_dir: Path, html_path: Path) -> None:
     doc = doc.replace("__TOTAL_SOURCE_BYTES__", str(tree["size_subtree"]))
     doc = doc.replace("__TOTAL_FILES__", str(tree["file_count_subtree"]))
     doc = doc.replace("__TOTAL_ARCHIVES__", str(len(manifests)))
-    html_path.write_text(doc)
+    html_path.write_text(doc, encoding="utf-8")
 
 
 def _load_manifests(manifests_dir: Path) -> list[dict]:
@@ -45,7 +45,7 @@ def _load_manifests(manifests_dir: Path) -> list[dict]:
     out = []
     for p in sorted(manifests_dir.glob("*.json")):
         try:
-            out.append(json.loads(p.read_text()))
+            out.append(json.loads(p.read_text(encoding="utf-8")))
         except json.JSONDecodeError:
             continue
     return out

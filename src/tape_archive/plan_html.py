@@ -40,7 +40,7 @@ def render_plan_html(plan: dict, output_path: Path) -> None:
         body="\n".join(body_parts),
         json_data=html.escape(json.dumps(plan, indent=2)),
     )
-    output_path.write_text(html_doc)
+    output_path.write_text(html_doc, encoding="utf-8")
 
 
 def _render_header(plan: dict) -> str:

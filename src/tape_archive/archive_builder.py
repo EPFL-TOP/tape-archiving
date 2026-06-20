@@ -155,7 +155,7 @@ def build_archive(
 
     if manifest_path.exists() and tar_path.exists() and not force:
         log.info("skip %s (manifest + tar already exist; use --force to rebuild)", name)
-        return json.loads(manifest_path.read_text())
+        return json.loads(manifest_path.read_text(encoding="utf-8"))
 
     files = _collect_files(source_root, members, excludes)
     if not files:
@@ -239,7 +239,7 @@ def build_archive(
         "archive_size_bytes": archive_size,
         "source_root": str(source_root),
     }
-    manifest_path.write_text(json.dumps(disk_manifest, indent=2))
+    manifest_path.write_text(json.dumps(disk_manifest, indent=2), encoding="utf-8")
 
     elapsed = time.time() - start
     log.info(
@@ -340,7 +340,7 @@ def write_collection_summary(output_dir: Path, manifests: list[dict], source_roo
         ],
     }
     path = output_dir / "summary.json"
-    path.write_text(json.dumps(summary, indent=2))
+    path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return path
 
 
@@ -352,7 +352,7 @@ def verify_archives(archives_dir: Path, manifests_dir: Path) -> tuple[int, int, 
     failures: list[str] = []
     checked = 0
     for manifest_path in sorted(manifests_dir.glob("*.json")):
-        manifest = json.loads(manifest_path.read_text())
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         expected_sha = manifest.get("archive_sha256")
         if not expected_sha:
             continue

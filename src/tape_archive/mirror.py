@@ -59,6 +59,6 @@ def build_mirror(
         "file_count": len(files),
         "files": files,
     }
-    (mirror_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    (mirror_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     log.info("mirror built: %d files at %s", len(files), mirror_dir)
     return manifest
