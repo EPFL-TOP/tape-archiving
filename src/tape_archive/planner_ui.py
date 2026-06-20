@@ -17,14 +17,18 @@ from .scan import walk_tree
 def render_planner(source_root: Path, output_path: Path) -> None:
     source_root = Path(source_root).resolve()
     tree, _ = walk_tree(source_root, with_files=True)
-    tree_json = json.dumps(tree, separators=(",", ":"))
-    # Prevent `</script>` inside filenames from terminating the embedded script.
-    tree_json = tree_json.replace("</", "<\\/")
+
+    def _js_str(s: str) -> str:
+        # json.dumps gives a JS-safe quoted string literal. Also neutralize
+        # `</script>` if it ever appears verbatim inside (defensive).
+        return json.dumps(s).replace("</", "<\\/")
+
+    tree_json = json.dumps(tree, separators=(",", ":")).replace("</", "<\\/")
 
     doc = _HTML
     doc = doc.replace("__TREE_DATA_JSON__", tree_json)
-    doc = doc.replace("__SOURCE_ROOT__", html.escape(str(source_root)))
-    doc = doc.replace("__GENERATED_AT__", datetime.now(timezone.utc).isoformat())
+    doc = doc.replace("__SOURCE_ROOT_JS__", _js_str(str(source_root)))
+    doc = doc.replace("__GENERATED_AT_JS__", _js_str(datetime.now(timezone.utc).isoformat()))
     output_path.write_text(doc, encoding="utf-8")
 
 
@@ -139,8 +143,8 @@ main { display: grid; grid-template-columns: 1fr 360px; gap: 12px;
 
 <script>
 const TREE_DATA = __TREE_DATA_JSON__;
-const SOURCE_ROOT = "__SOURCE_ROOT__";
-const GENERATED_AT = "__GENERATED_AT__";
+const SOURCE_ROOT = __SOURCE_ROOT_JS__;
+const GENERATED_AT = __GENERATED_AT_JS__;
 const LS_KEY = "tape-archive-planner:" + SOURCE_ROOT;
 
 const state = {
