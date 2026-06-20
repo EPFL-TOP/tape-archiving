@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+
+log = logging.getLogger("tape_archive.scan")
 
 
 def walk_tree(root: Path, *, with_files: bool = False) -> tuple[dict, dict]:
@@ -15,14 +18,39 @@ def walk_tree(root: Path, *, with_files: bool = False) -> tuple[dict, dict]:
     If ``with_files`` is True, each directory node also carries a ``files`` list
     of ``{name, size}`` dicts for the planner UI to display.
     """
-    root = Path(root).resolve()
+    raw = Path(root)
+    resolved = raw.resolve()
+    if str(resolved) != str(raw):
+        log.info("resolved %s -> %s", raw, resolved)
+    root = resolved
     if not root.exists():
         raise FileNotFoundError(root)
     if not root.is_dir():
         raise NotADirectoryError(root)
     ext_totals: dict[str, dict] = defaultdict(lambda: {"count": 0, "size": 0})
+    log.info("walking %s ...", root)
     tree = _walk(root, root, ext_totals, with_files=with_files)
+    log.info(
+        "walked %s: %d direct entries, %d files in subtree, %s total",
+        root, len(tree["children"]) + tree["file_count_direct"],
+        tree["file_count_subtree"], _fmt(tree["size_subtree"]),
+    )
+    if tree["file_count_subtree"] == 0 and tree["subdir_count"] == 0:
+        log.warning(
+            "tree is empty for %s — check permissions / mount / path. "
+            "Try: python -c \"import os; print(list(os.scandir(r'%s'))[:3])\"",
+            root, root,
+        )
     return tree, {k: dict(v) for k, v in ext_totals.items()}
+
+
+def _fmt(b: float) -> str:
+    b = float(b)
+    for u in ("B", "KB", "MB", "GB", "TB"):
+        if b < 1024:
+            return f"{b:.1f} {u}"
+        b /= 1024
+    return f"{b:.1f} PB"
 
 
 def scan(
@@ -49,6 +77,14 @@ def scan(
     }
 
 
+def _safe_is_dir(e) -> bool:
+    """is_dir() can raise on broken network paths; treat raise as 'not a dir'."""
+    try:
+        return e.is_dir(follow_symlinks=False)
+    except OSError:
+        return False
+
+
 def _walk(node_path: Path, root: Path, ext_totals: dict, *, with_files: bool = False) -> dict:
     rel = node_path.relative_to(root)
     rel_s = "." if str(rel) == "." else rel.as_posix()
@@ -68,9 +104,13 @@ def _walk(node_path: Path, root: Path, ext_totals: dict, *, with_files: bool = F
         node["files"] = []
     try:
         entries = list(os.scandir(node_path))
-    except (PermissionError, OSError):
+    except (PermissionError, OSError) as ex:
+        log.warning("os.scandir failed on %s: %s: %s", node_path, type(ex).__name__, ex)
         return node
-    entries.sort(key=lambda e: (not e.is_dir(follow_symlinks=False), e.name))
+    try:
+        entries.sort(key=lambda e: (not _safe_is_dir(e), e.name))
+    except OSError as ex:
+        log.warning("sort failed on %s: %s: %s", node_path, type(ex).__name__, ex)
     for e in entries:
         try:
             if e.is_symlink():
