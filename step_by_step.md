@@ -251,6 +251,126 @@ automatically.
 
 ---
 
+## Larger datasets with subfolders (multi-plan workflow)
+
+`Ece-thesis-paper` is the easy case: one flat source dir, 29 archives all at
+depth 1, one plan. Larger datasets often have hierarchy — e.g.
+`Arianne` with multiple top-level subgroups, each containing its own
+experiments at varying depths. For those, run **one plan per logical
+subgroup**, and keep the hierarchy on NAS/tape mirroring the source.
+
+### Example: `Arianne` with three subgroups
+
+```text
+G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\arianne\
+├── group1\
+│   ├── project_a\         (~6 TB, ~12 experiment dirs)
+│   └── project_b\         (~8 TB)
+├── group2\
+│   └── sub\data\          (~15 TB, deeply nested)
+└── group3\                (~3 TB, flat)
+```
+
+50 TB total. Run **one planner + plan + compress + ship cycle per top-level
+subgroup**. Don't try to plan the whole 50 TB in one HTML — the planner page
+embeds the full file tree as JSON and gets sluggish past a few million entries.
+
+### One iteration, for `arianne/group1/project_a`
+
+```bash
+# 1. plan (on local server)
+SUBROOT=G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\arianne\group1\project_a
+tape-archive planner "$SUBROOT" -o planner_arianne_group1_project_a.html
+# → open in browser, pick archive roots, Download → plan_arianne_group1_project_a.yaml
+
+# 2. compress
+tape-archive compress plan_arianne_group1_project_a.yaml \
+  --zstd-level 3 --parallel 4 -v \
+  -o G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\arianne\group1\project_a__COMPRESSED
+
+# 3. push to NAS, MIRRORING the source path under lab-archives-catalog/
+rclone copy \
+  G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\arianne\group1\project_a__COMPRESSED \
+  nas_rcp:upoates/common/lab-archives-catalog/arianne/group1/project_a \
+  --transfers 4 --checkers 16 --progress
+
+# 4. on SCITAS, ship — note the path mirrors NAS and the source
+tape-archive ship \
+  --nas  nas_rcp:upoates/common/lab-archives-catalog/arianne/group1/project_a \
+  --work /work/upoates/ship/arianne/group1/project_a \
+  --tape /archive/upoates/lab-archives/arianne/group1/project_a \
+  --batch-budget-gb 17000 -v
+
+# 5. clean NAS tars (you handle this)
+rclone purge \
+  nas_rcp:upoates/common/lab-archives-catalog/arianne/group1/project_a/archives
+```
+
+Repeat for `arianne/group1/project_b`, `arianne/group2/sub/data`, `arianne/group3`, etc.
+
+### Final layout you end up with
+
+NAS (browsable, catalog only — no tars after cleanup):
+```text
+nas_rcp:upoates/common/lab-archives-catalog/
+├── index.html                      ← master page (recursive, sees everything below)
+├── Ece-thesis-paper/               (flat)
+│   ├── catalog.html
+│   └── manifests/, plan.yaml, summary.json
+├── arianne/
+│   ├── group1/
+│   │   ├── project_a/
+│   │   │   └── catalog.html ...
+│   │   └── project_b/
+│   │       └── catalog.html ...
+│   ├── group2/sub/data/
+│   │   └── catalog.html ...
+│   └── group3/
+│       └── catalog.html ...
+└── ...
+```
+
+Tape (parallel structure, just the tars):
+```text
+/archive/upoates/lab-archives/
+├── Ece-thesis-paper/*.tar
+└── arianne/
+    ├── group1/project_a/*.tar
+    ├── group1/project_b/*.tar
+    ├── group2/sub/data/*.tar
+    └── group3/*.tar
+```
+
+The master `index.html` on the NAS will pick up **every** collection no matter
+how deep, because `tape-archive index` walks recursively. Each card shows the
+full path relative to `lab-archives-catalog/`, so biologists see at a glance
+which subgroup a collection belongs to.
+
+### Batch tip — script the loop
+
+Once you've generated all the plan YAMLs for one dataset, the
+compress/push/ship cycle is mechanical. A shell loop on the local server:
+
+```bash
+for plan in plan_arianne_*.yaml; do
+  # derive a name like "arianne_group1_project_a" from the plan filename
+  NAME=${plan#plan_}; NAME=${NAME%.yaml}
+  NAS_REL=$(echo "$NAME" | tr '_' '/')   # adjust if your naming differs
+  tape-archive compress "$plan" \
+    -o "G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\${NAME}__COMPRESSED" \
+    --zstd-level 3 --parallel 4 -v
+  rclone copy "G:\...\${NAME}__COMPRESSED" \
+    "nas_rcp:upoates/common/lab-archives-catalog/${NAS_REL}" \
+    --transfers 4 --checkers 16 --progress
+done
+```
+
+And on SCITAS, a matching loop calling `tape-archive ship` for each
+collection. Both loops are resumable — compress and ship skip what's already
+done.
+
+---
+
 ## Restore (when you pull from tape)
 
 `tape-archive restore` closes the loop: extract one `.tar`, decompress each
