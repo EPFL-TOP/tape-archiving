@@ -130,6 +130,27 @@ def main(argv: list[str] | None = None) -> int:
     p_verify.add_argument("--manifests", help="Manifests dir (defaults to <output_dir>/manifests)")
     p_verify.add_argument("-v", "--verbose", action="store_true")
 
+    p_restore = sub.add_parser(
+        "restore",
+        help="Extract one .tar archive, decompress each per-file .zst, and verify each file's sha256.",
+    )
+    p_restore.add_argument("tar", help="Path to the .tar file (already pulled from tape)")
+    p_restore.add_argument("-o", "--output", required=True,
+                           help="Destination directory; tar contents land here.")
+    p_restore.add_argument("--no-verify", action="store_true",
+                           help="Skip per-file sha256 verification (still checks size).")
+    p_restore.add_argument("--no-decompress", action="store_true",
+                           help="Just extract the tar; leave .zst files in place.")
+    p_restore.add_argument("--keep-compressed", action="store_true",
+                           help="After verify, keep the .zst alongside the decompressed file.")
+    p_restore.add_argument("--skip-existing", action="store_true",
+                           help="Skip files whose decompressed copy already exists and verifies.")
+    p_restore.add_argument("--manifest",
+                           help="External manifest (default: _MANIFEST.json bundled in the tar)")
+    p_restore.add_argument("--parallel", type=int, default=1,
+                           help="Decompress N files concurrently (default 1).")
+    p_restore.add_argument("-v", "--verbose", action="store_true")
+
     p_ship = sub.add_parser(
         "ship",
         help="Ship one collection's archives from NAS to tape via /work (rclone copy → verify → rsync → verify → delete).",
@@ -279,6 +300,20 @@ def main(argv: list[str] | None = None) -> int:
         for line in failures:
             print(f"  FAIL: {line}", file=sys.stderr)
         return 0 if fails == 0 else 1
+
+    if args.cmd == "restore":
+        from .restore import restore
+        results = restore(
+            Path(args.tar),
+            Path(args.output),
+            verify=not args.no_verify,
+            decompress=not args.no_decompress,
+            keep_compressed=args.keep_compressed,
+            skip_existing=args.skip_existing,
+            manifest_path=Path(args.manifest) if args.manifest else None,
+            parallel=args.parallel,
+        )
+        return 0 if not results.get("failed") else 1
 
     if args.cmd == "ship":
         from .ship import ship

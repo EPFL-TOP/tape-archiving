@@ -251,32 +251,63 @@ automatically.
 
 ---
 
-## Restore (for later, when you actually pull from tape)
+## Restore (when you pull from tape)
+
+`tape-archive restore` closes the loop: extract one `.tar`, decompress each
+per-file `.zst`, and verify the SHA-256 of every original byte against the
+bundled manifest. Single read pass per file.
 
 ```bash
 # Pull a tar from tape to a working directory:
 cp /archive/upoates/lab-archives/Ece-thesis-paper/210131ablation.tar /restore/
-tar -xf /restore/210131ablation.tar -C /restore/
 
-# Verify per-file sha256s against the bundled manifest:
-python3 - <<'PY'
-import json, hashlib, zstandard
-from pathlib import Path
-restore = Path("/restore")
-m = json.loads((restore / "_MANIFEST.json").read_text())
-bad = 0
-for f in m["files"]:
-    zst = restore / (f["path"] + ".zst")
-    data = zstandard.ZstdDecompressor().decompress(zst.read_bytes())
-    if hashlib.sha256(data).hexdigest() != f["sha256"]:
-        print("MISMATCH:", f["path"]); bad += 1
-print(f"checked {len(m['files'])} files, {bad} bad")
-PY
+# Full restore + verify:
+tape-archive restore /restore/210131ablation.tar -o /restore/210131ablation/ \
+  --parallel 8 -v
+
+# Exit 0 = every file decompressed and matches its manifest sha256.
+# Exit 1 = at least one file failed; the FAIL lines name which.
 ```
 
-The `.zst` files stay as-is once extracted — only decompress the ones you
-actually need. (We'll formalise this into `tape-archive restore-verify` when
-you start doing it routinely.)
+What you get in `/restore/210131ablation/`:
+- The original directory tree with all files restored to their pre-archive bytes
+- The bundled `_MANIFEST.json` (kept; useful for future re-verification)
+- (No `.zst` files by default — they're removed once their sibling decompressed file passes verification)
+
+### Useful flags
+
+```bash
+# Cheap inspection: just lay out the .zst tree, don't decompress yet:
+tape-archive restore archive.tar -o /restore/ --no-decompress
+
+# Decompress but keep .zst sidecars (re-verifiable later, costs ~2x disk):
+tape-archive restore archive.tar -o /restore/ --keep-compressed
+
+# Resume an interrupted restore (skip files already present and correct):
+tape-archive restore archive.tar -o /restore/ --skip-existing
+
+# External manifest (e.g., from the NAS catalog) instead of the bundled one:
+tape-archive restore archive.tar -o /restore/ \
+  --manifest /nas/lab-archives-catalog/Ece-thesis-paper/manifests/210131ablation.json
+
+# Skip verification (size-only check; faster but no integrity guarantee):
+tape-archive restore archive.tar -o /restore/ --no-verify
+```
+
+### What catches corruption
+
+Two independent layers:
+
+1. **zstd frame CRC** — every `.zst` contains a checksum of the compressed data.
+   If a bit flipped during tape read or transfer, `zstd -d` fails with
+   `Restored data doesn't match checksum` *before* we even compute the sha256.
+   You'll see a `FAIL <path>: decompress failed: ...` line.
+2. **SHA-256 against manifest** — even if zstd somehow decompresses cleanly,
+   a content mismatch with the manifest's per-file sha256 is reported as
+   `sha256 mismatch (<got> != <expected>)`.
+
+Together: any tape bit-rot, transfer corruption, or accidental modification is
+caught on the first restore attempt.
 
 ---
 
