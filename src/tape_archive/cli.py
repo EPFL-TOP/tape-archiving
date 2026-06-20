@@ -100,6 +100,8 @@ def main(argv: list[str] | None = None) -> int:
     p_compress.add_argument("--archive", action="append", help="Only build this archive (repeatable). Default: all in plan.")
     p_compress.add_argument("--force", action="store_true", help="Rebuild archives even when their manifest already exists")
     p_compress.add_argument("--no-catalog", action="store_true", help="Skip catalog HTML generation at the end")
+    p_compress.add_argument("--parallel", type=int, default=1,
+                            help="Compress N archives concurrently (default 1 = sequential). Each archive is independent.")
     p_compress.add_argument("-v", "--verbose", action="store_true")
 
     p_catalog = sub.add_parser(
@@ -224,6 +226,7 @@ def main(argv: list[str] | None = None) -> int:
             zstd_level=args.zstd_level,
             force=args.force,
             only=args.archive,
+            parallel=args.parallel,
         )
         # Aggregate summary (use all on-disk manifests, not just freshly-built ones,
         # so summary reflects the full collection even when --archive limits this run).

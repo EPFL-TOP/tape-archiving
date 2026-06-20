@@ -261,9 +261,15 @@ def build_all(
     zstd_level: int = 3,
     force: bool = False,
     only: list[str] | None = None,
+    parallel: int = 1,
 ) -> list[dict]:
-    """Build every archive in the plan. Returns list of manifests."""
-    manifests: list[dict] = []
+    """Build every archive in the plan. Returns list of manifests.
+
+    ``parallel`` controls how many archives are compressed concurrently in
+    separate processes. Each archive is independent (separate tar, separate
+    manifest, separate temp file), so this scales linearly until you hit your
+    source-read bandwidth or CPU ceiling. Default 1 (sequential).
+    """
     archives = plan["archives"]
     if only:
         wanted = set(only)
@@ -271,12 +277,43 @@ def build_all(
         missing = wanted - {a["name"] for a in archives}
         if missing:
             log.warning("archives not found in plan: %s", ", ".join(sorted(missing)))
-    log.info("building %d archive(s) from plan %s", len(archives), plan.get("source_root"))
-    for arch in archives:
-        m = build_archive(arch, source_root, output_dir, zstd_level=zstd_level, force=force)
-        if m:
-            manifests.append(m)
-    return manifests
+    log.info("building %d archive(s) from plan %s (parallel=%d)",
+             len(archives), plan.get("source_root"), max(1, parallel))
+
+    if parallel <= 1 or len(archives) <= 1:
+        manifests: list[dict] = []
+        for arch in archives:
+            m = build_archive(arch, source_root, output_dir, zstd_level=zstd_level, force=force)
+            if m:
+                manifests.append(m)
+        return manifests
+
+    # Parallel mode: one worker process per archive (up to `parallel` at once).
+    # Path objects survive pickling but we pass strings to stay defensive against
+    # spawn-context quirks.
+    from multiprocessing import Pool
+    args_list = [
+        (arch, str(source_root), str(output_dir), zstd_level, force)
+        for arch in archives
+    ]
+    with Pool(parallel) as pool:
+        results = pool.starmap(_build_archive_worker, args_list)
+    return [m for m in results if m]
+
+
+def _build_archive_worker(arch, source_root_str, output_dir_str, zstd_level, force):
+    """multiprocessing entry point — restores log config in spawn workers."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s | %(message)s",
+    )
+    return build_archive(
+        arch,
+        Path(source_root_str),
+        Path(output_dir_str),
+        zstd_level=zstd_level,
+        force=force,
+    )
 
 
 def write_collection_summary(output_dir: Path, manifests: list[dict], source_root: Path) -> Path:
