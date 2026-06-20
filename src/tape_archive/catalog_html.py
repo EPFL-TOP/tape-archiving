@@ -229,31 +229,18 @@ function escapeHtml(s) {
 
 let filterText = '';
 
-function nodeMatches(node) {
-  if (!filterText) return true;
-  const f = filterText.toLowerCase();
-  if (node.path.toLowerCase().includes(f)) return true;
-  for (const file of node.files || []) {
-    if (file.name.toLowerCase().includes(f) || file.sha256.toLowerCase().includes(f)) return true;
-  }
-  for (const c of node.children || []) {
-    if (nodeMatches(c)) return true;
-  }
-  return false;
-}
-
 function renderTree() {
   const container = document.getElementById('tree');
   container.innerHTML = '';
-  container.appendChild(renderNode(TREE_DATA, true));
+  // No filter active → lazy: only the root and its direct children's stubs.
+  // Filter active → eager-but-pruned: render every subtree that matches.
+  const node = filterText ? renderNodeFiltered(TREE_DATA, true)
+                          : renderNodeLazy(TREE_DATA, true);
+  if (node) container.appendChild(node);
+  else container.innerHTML = '<div class="hint">No matches.</div>';
 }
 
-function renderNode(node, isRoot) {
-  if (!nodeMatches(node)) {
-    return document.createDocumentFragment();
-  }
-  const det = document.createElement('details');
-  if (isRoot || filterText) det.open = true;
+function buildSummary(node, isRoot) {
   const sum = document.createElement('summary');
   const name = document.createElement('span');
   name.className = 'name';
@@ -263,32 +250,84 @@ function renderNode(node, isRoot) {
   meta.className = 'meta';
   meta.textContent = ` [${fmtSize(node.size_subtree)}, ${node.file_count_subtree.toLocaleString()} files]`;
   sum.appendChild(meta);
-  det.appendChild(sum);
+  return sum;
+}
 
-  if (node.children && node.children.length) {
+function buildFileLi(f) {
+  const li = document.createElement('li');
+  li.innerHTML =
+    '<span class="file-name">' + escapeHtml(f.name) + '</span>' +
+    '<span class="meta">[' + fmtSize(f.size) + ']</span>' +
+    '<span class="sha" title="SHA-256 of original (uncompressed) bytes">' + f.sha256.slice(0, 16) + '…</span>' +
+    '<span class="arch-link" data-archive="' + escapeHtml(f.archive) + '">' + escapeHtml(f.archive) + '</span>';
+  return li;
+}
+
+function renderNodeLazy(node, isRoot) {
+  const det = document.createElement('details');
+  if (isRoot) det.open = true;
+  det.appendChild(buildSummary(node, isRoot));
+  let rendered = false;
+  function expand() {
+    if (rendered) return;
+    rendered = true;
+    if (node.children && node.children.length) {
+      const ul = document.createElement('ul');
+      for (const c of node.children) {
+        const li = document.createElement('li');
+        li.appendChild(renderNodeLazy(c, false));
+        ul.appendChild(li);
+      }
+      det.appendChild(ul);
+    }
+    if (node.files && node.files.length) {
+      const ul = document.createElement('ul');
+      ul.className = 'files';
+      for (const f of node.files) ul.appendChild(buildFileLi(f));
+      det.appendChild(ul);
+    }
+  }
+  if (isRoot) {
+    expand();
+  } else {
+    det.addEventListener('toggle', () => { if (det.open) expand(); });
+  }
+  return det;
+}
+
+function renderNodeFiltered(node, isRoot) {
+  // Returns <details> only if this subtree has any match; otherwise null.
+  const f = filterText;
+  const dirSelfMatches = node.path.toLowerCase().includes(f);
+  const matchingFiles = (node.files || []).filter(file =>
+    file.name.toLowerCase().includes(f) ||
+    node.path.toLowerCase().includes(f) ||
+    file.sha256.toLowerCase().includes(f)
+  );
+  const childResults = [];
+  for (const c of (node.children || [])) {
+    const r = renderNodeFiltered(c, false);
+    if (r) childResults.push(r);
+  }
+  if (!isRoot && !dirSelfMatches && childResults.length === 0 && matchingFiles.length === 0) {
+    return null;
+  }
+  const det = document.createElement('details');
+  det.open = true;   // filter mode: always expand matches
+  det.appendChild(buildSummary(node, isRoot));
+  if (childResults.length) {
     const ul = document.createElement('ul');
-    for (const c of node.children) {
+    for (const child of childResults) {
       const li = document.createElement('li');
-      li.appendChild(renderNode(c, false));
+      li.appendChild(child);
       ul.appendChild(li);
     }
     det.appendChild(ul);
   }
-  if (node.files && node.files.length) {
+  if (matchingFiles.length) {
     const ul = document.createElement('ul');
     ul.className = 'files';
-    for (const f of node.files) {
-      if (filterText && !f.name.toLowerCase().includes(filterText) &&
-          !node.path.toLowerCase().includes(filterText) &&
-          !f.sha256.toLowerCase().includes(filterText)) continue;
-      const li = document.createElement('li');
-      li.innerHTML =
-        '<span class="file-name">' + escapeHtml(f.name) + '</span>' +
-        '<span class="meta">[' + fmtSize(f.size) + ']</span>' +
-        '<span class="sha" title="SHA-256 of original (uncompressed) bytes">' + f.sha256.slice(0, 16) + '…</span>' +
-        '<span class="arch-link" data-archive="' + escapeHtml(f.archive) + '">' + escapeHtml(f.archive) + '</span>';
-      ul.appendChild(li);
-    }
+    for (const file of matchingFiles) ul.appendChild(buildFileLi(file));
     det.appendChild(ul);
   }
   return det;

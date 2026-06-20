@@ -233,10 +233,42 @@ function computeArchives() {
   return out;
 }
 
-// ---------- rendering ----------
-function rerender() {
+// ---------- rendering (lazy) ----------
+// We render the tree on demand: only the currently-visible level is in the
+// DOM. When a <details> is opened the first time, we render its direct
+// children/files. State changes (checkbox toggles, presets) update badges
+// and checkboxes in place — we never rebuild the tree.
+
+function syncSelectionUi() {
+  // Update badges + checkboxes on every <details> currently in the DOM.
+  document.querySelectorAll('#tree details').forEach(updateNodeUi);
+}
+
+function updateNodeUi(det) {
+  const node = det._node;
+  if (!node) return;
+  const sum = det.querySelector(':scope > summary');
+  if (!sum) return;
+  // Keep checkbox in sync with state (for presets/reset etc.).
+  const cb = sum.querySelector('input[type="checkbox"]');
+  if (cb) cb.checked = state.selected.has(node.path);
+  // Recompute badge.
+  sum.querySelectorAll('.badge').forEach(b => b.remove());
+  sum.classList.remove('selected');
+  const owner = ownerArchive(node.path);
+  if (owner) {
+    const isThis = owner === node.path;
+    const b = document.createElement('span');
+    b.className = 'badge' + (isThis ? '' : ' inherited');
+    b.textContent = '→ ' + (state.names[owner] || autoName(owner));
+    sum.appendChild(b);
+    if (isThis) sum.classList.add('selected');
+  }
+}
+
+function onStateChanged() {
   saveState();
-  renderTree();
+  syncSelectionUi();
   renderArchives();
 }
 
@@ -248,6 +280,7 @@ function renderTree() {
 
 function renderNode(node, isRoot) {
   const det = document.createElement('details');
+  det._node = node;
   if (isRoot) det.open = true;
 
   const sum = document.createElement('summary');
@@ -260,7 +293,7 @@ function renderNode(node, isRoot) {
     cb.addEventListener('change', () => {
       if (cb.checked) state.selected.add(node.path);
       else state.selected.delete(node.path);
-      rerender();
+      onStateChanged();
     });
     sum.appendChild(cb);
   }
@@ -275,6 +308,7 @@ function renderNode(node, isRoot) {
   meta.textContent = ` [${formatSize(node.size_subtree)}, ${node.file_count_subtree.toLocaleString()} files${loose}]`;
   sum.appendChild(meta);
 
+  // Initial badge (in case state already marks this node).
   const owner = ownerArchive(node.path);
   if (owner) {
     const isThis = owner === node.path;
@@ -286,26 +320,40 @@ function renderNode(node, isRoot) {
   }
   det.appendChild(sum);
 
-  const childDirs = node.children || [];
-  const files = node.files || [];
-  if (childDirs.length) {
-    const ul = document.createElement('ul');
-    for (const c of childDirs) {
-      const li = document.createElement('li');
-      li.appendChild(renderNode(c, false));
-      ul.appendChild(li);
+  // Lazy: children/files are only built when this <details> opens.
+  let childrenRendered = false;
+  function renderChildren() {
+    if (childrenRendered) return;
+    childrenRendered = true;
+    const childDirs = node.children || [];
+    if (childDirs.length) {
+      const ul = document.createElement('ul');
+      for (const c of childDirs) {
+        const li = document.createElement('li');
+        li.appendChild(renderNode(c, false));
+        ul.appendChild(li);
+      }
+      det.appendChild(ul);
     }
-    det.appendChild(ul);
+    const files = node.files || [];
+    if (files.length) {
+      const ul = document.createElement('ul');
+      ul.className = 'files';
+      for (const f of files) {
+        const li = document.createElement('li');
+        li.innerHTML = `<span class="file-name">${escapeHtml(f.name)}</span> <span class="meta">[${formatSize(f.size)}]</span>`;
+        ul.appendChild(li);
+      }
+      det.appendChild(ul);
+    }
   }
-  if (files.length) {
-    const ul = document.createElement('ul');
-    ul.className = 'files';
-    for (const f of files) {
-      const li = document.createElement('li');
-      li.innerHTML = `<span class="file-name">${escapeHtml(f.name)}</span> <span class="meta">[${formatSize(f.size)}]</span>`;
-      ul.appendChild(li);
-    }
-    det.appendChild(ul);
+  // Root is open=true by default → render its children immediately.
+  if (isRoot) {
+    renderChildren();
+  } else {
+    det.addEventListener('toggle', () => {
+      if (det.open) renderChildren();
+    });
   }
   return det;
 }
@@ -334,7 +382,7 @@ function renderArchives() {
     rm.addEventListener('click', () => {
       state.selected.delete(a.root);
       delete state.names[a.root];
-      rerender();
+      onStateChanged();
     });
     div.appendChild(rm);
 
@@ -344,7 +392,7 @@ function renderArchives() {
     inp.value = a.name;
     inp.addEventListener('change', () => {
       state.names[a.root] = inp.value;
-      rerender();
+      onStateChanged();
     });
     div.appendChild(inp);
 
@@ -378,7 +426,7 @@ function markDepth(targetDepth) {
     for (const c of (node.children || [])) walk(c, depth + 1);
   }
   walk(TREE_DATA, 0);
-  rerender();
+  onStateChanged();
 }
 
 // ---------- YAML download ----------
@@ -446,12 +494,14 @@ function init() {
   document.getElementById('reset-btn').addEventListener('click', () => {
     if (!confirm('Clear all selections?')) return;
     state.selected.clear(); state.names = {};
-    rerender();
+    onStateChanged();
   });
   document.querySelectorAll('.presets button[data-depth]').forEach(b => {
     b.addEventListener('click', () => markDepth(parseInt(b.dataset.depth, 10)));
   });
-  rerender();
+  // Initial render: tree (lazy — only root + level-1 children eager) + archives.
+  renderTree();
+  renderArchives();
 }
 document.addEventListener('DOMContentLoaded', init);
 </script>
