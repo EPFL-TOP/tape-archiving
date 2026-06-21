@@ -166,7 +166,16 @@ def build_archive(
     start = time.time()
 
     file_manifests: list[dict] = []
-    tmp_fd = tempfile.NamedTemporaryFile(prefix=f"tape-archive-{name}-", suffix=".zst", delete=False)
+    # Put the temp file on the SAME volume as the output dir. The default
+    # %TEMP%/$TMPDIR is usually on the system drive and can be much smaller
+    # than the destination volume — running out mid-frame manifests as a
+    # very confusing zstd "Src size is incorrect" error.
+    tmp_fd = tempfile.NamedTemporaryFile(
+        prefix=f"tape-archive-{name}-",
+        suffix=".zst",
+        dir=str(archives_dir),
+        delete=False,
+    )
     tmp_fd.close()
     tmp_path = Path(tmp_fd.name)
 

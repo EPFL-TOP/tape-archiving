@@ -231,7 +231,32 @@ def main(argv: list[str] | None = None) -> int:
         from .catalog_html import render_catalog
 
         plan_path = Path(args.plan)
-        plan = yaml.safe_load(plan_path.read_text(encoding="utf-8"))
+        if not plan_path.exists():
+            raise SystemExit(f"plan file not found: {plan_path}")
+        if plan_path.suffix.lower() == ".html":
+            raise SystemExit(
+                f"{plan_path} is the planner HTML, not a plan. "
+                f"Open it in a browser, tick folders, click 'Download plan.yaml', "
+                f"then pass the downloaded YAML to compress."
+            )
+        if plan_path.suffix.lower() not in (".yaml", ".yml"):
+            print(
+                f"warning: {plan_path} doesn't have a .yaml/.yml extension; "
+                f"is it actually the plan?",
+                file=sys.stderr,
+            )
+        try:
+            plan = yaml.safe_load(plan_path.read_text(encoding="utf-8"))
+        except yaml.YAMLError as e:
+            raise SystemExit(
+                f"failed to parse {plan_path} as YAML: {e}\n"
+                f"hint: pass the plan.yaml downloaded from the planner HTML, not the HTML itself."
+            )
+        if not isinstance(plan, dict) or "archives" not in plan:
+            raise SystemExit(
+                f"{plan_path} doesn't look like a tape-archive plan "
+                f"(missing 'archives' key). Did you pass the planner HTML by mistake?"
+            )
         source_root = Path(args.source_root or plan["source_root"]).resolve()
         if not source_root.is_dir():
             raise SystemExit(f"source_root does not exist or is not a directory: {source_root}")
