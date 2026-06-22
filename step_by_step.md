@@ -4,32 +4,38 @@ End-to-end procedure for archiving one collection from jetraw to LTO tape.
 Concrete paths below use `Ece-thesis-paper` as the running example — substitute
 your own collection name where you see it.
 
-## The three machines
+## The machines
 
 ```text
-   ┌───────────────────────────┐       ┌──────────────────────────┐       ┌──────────────────────────┐
-   │  Local server (HIVE)      │       │  NAS (sv-nas1)           │       │  SCITAS (jed)            │
-   │                           │       │                          │       │                          │
-   │  - tape-archive CLI       │ ───▶  │  source dir              │       │  - tape-archive CLI      │
-   │  - mounts NAS read-only   │       │  catalog dir             │ ───▶  │  - /work (20 TB quota)   │
-   │  - local scratch          │ ◀───  │                          │       │  - /archive (tape)       │
-   │                           │       │                          │       │                          │
-   │  plan + compress + push   │       │  jetraw lands here       │       │  rclone NAS → /work      │
-   │   (parallel)              │       │  catalog stays here      │       │  rsync /work → /archive  │
-   └───────────────────────────┘       └──────────────────────────┘       └──────────────────────────┘
-                                         │
-                                         └── biologists open
-                                             lab-archives-catalog/index.html
-                                             on the NAS to find files
+   ┌───────────────────────────────────────┐       ┌──────────────────────────┐
+   │  Local server / HIVE                  │       │  SCITAS (jed)            │
+   │                                       │       │                          │
+   │  - tape-archive CLI                   │       │  - tape-archive CLI      │
+   │  - mounts NAS read-only (for source)  │       │  - /work (20 TB quota)   │
+   │  - compress output stays here         │ ───▶  │  - /archive (tape)       │
+   │  - catalog (manifests + html) lives   │       │                          │
+   │    here forever                       │       │  rclone hive → /work     │
+   │                                       │       │  rsync  /work → /archive │
+   │  reachable from SCITAS as the         │       │                          │
+   │  rclone remote 'hive-project02:'      │       │                          │
+   └───────────────────────────────────────┘       └──────────────────────────┘
+                  │
+                  └── biologists open
+                      catalog/index.html on HIVE
+                      (mounted as G:\PROJECTS-02\... or similar)
+                      to find files and look up archive names
 ```
 
-**Data path**: jetraw → NAS source dir → local server (read via mount) →
-local server scratch (compressed archives + catalog) → NAS catalog dir → SCITAS
-/work → tape.
+**Data path**: jetraw → NAS source dir → local server (read via NAS mount) →
+HIVE scratch (compressed archives + catalog, durable) → SCITAS /work → tape.
+
+The NAS is **only the source of raw jetraw data**. Everything downstream
+lives on HIVE — no NAS round-trip after compress. SCITAS pulls archives
+directly from the HIVE rclone remote.
 
 **Source of truth for "what's on tape"**: the per-archive `_MANIFEST.json`
 inside each `.tar` (file-level sha256s) + the on-disk `manifests/*.json` on the
-NAS catalog (with archive-level sha256s).
+HIVE catalog (with archive-level sha256s).
 
 ---
 
@@ -67,27 +73,35 @@ pip install -e .
 tape-archive --help
 ```
 
-### On the NAS — directory conventions
+### Directory conventions
+
+**NAS** — only stores the raw jetraw source:
 
 ```text
-nas_rcp:upoates/common/
-  UPOATES_DATA_ARCHIVES/TOTAPE/        ← jetraw deposits here
-    Ece-thesis-paper/                  ← one source collection
-      …
-  lab-archives-catalog/                ← long-term home for catalogs
-    Ece-thesis-paper/                  ← one collection's catalog
-      catalog.html
-      summary.json
-      plan.yaml
-      manifests/
-      archives/                        ← (deleted after ship; tape is the home)
-    index.html                         ← master page across all collections
+nas_rcp:upoates/common/UPOATES_DATA_ARCHIVES/TOTAPE/
+  Ece-thesis-paper/        ← one source collection (jetraw deposits here)
+    …
 ```
 
-The two NAS folders (`UPOATES_DATA_ARCHIVES/TOTAPE/` and
-`lab-archives-catalog/`) are independent and never touch each other. The first
-holds raw data; the second holds the durable catalog and the transient archive
-spool.
+**HIVE (local server, also reachable from SCITAS as `hive-project02:`)** —
+holds the compress output, becomes the durable catalog after archives ship to tape:
+
+```text
+G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\        ← Windows view
+hive-project02:PROJECTS-02/Clement/TMP-ARCHIVE-TO_SCITAS/   ← rclone view
+  Ece-thesis-movies/                                 ← one collection
+    catalog.html
+    summary.json
+    plan.yaml
+    manifests/
+    archives/                ← removed after archives are confirmed on tape
+  index.html                 ← master page across all collections
+```
+
+The same path is reachable two ways:
+
+- From the local Windows server: `G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\Ece-thesis-movies\`
+- From SCITAS via rclone: `hive-project02:PROJECTS-02/Clement/TMP-ARCHIVE-TO_SCITAS/Ece-thesis-movies`
 
 ---
 
@@ -159,21 +173,11 @@ Quick local sanity check before pushing:
 tape-archive verify $STAGING        # re-hashes every .tar against its manifest
 ```
 
-### 3. Push to NAS — local server
+### 3. Ship to tape — SCITAS
 
-```bash
-NAS_CATALOG=nas_rcp:upoates/common/lab-archives-catalog/$NAME
-
-# Push everything (catalog assets + the heavy archives):
-rclone copy $STAGING $NAS_CATALOG \
-  --transfers 4 --checkers 16 --progress
-```
-
-After this, `$STAGING` can be deleted on the local server — the NAS now holds
-both the catalog AND the archives. The archives stay on NAS until SCITAS has
-shipped them to tape (next step).
-
-### 4. Ship to tape — SCITAS
+No "push to NAS" step. The compress output already sits on HIVE at the same
+path that SCITAS reaches via `hive-project02:`. `ship` pulls from there
+directly into `/work`, then rsyncs to `/archive`.
 
 ```bash
 # On SCITAS, in tmux (this is the long step):
@@ -181,19 +185,22 @@ tmux new -s ship-ECE
 conda activate jetraw
 module load rclone
 
-NAME=Ece-thesis-paper
+NAME=Ece-thesis-movies
 tape-archive ship \
-  --nas  nas_rcp:upoates/common/lab-archives-catalog/$NAME \
+  --nas  hive-project02:PROJECTS-02/Clement/TMP-ARCHIVE-TO_SCITAS/$NAME \
   --work /work/upoates/ship/$NAME \
   --tape /archive/upoates/lab-archives/$NAME \
   --batch-budget-gb 17000 \
   -v
 ```
 
+(The flag is called `--nas` for historical reasons but accepts any rclone
+remote path. Here it points at HIVE.)
+
 What ship does, one archive at a time:
 
 1. Skip if the tar is already on `--tape` with matching sha256.
-2. `rclone copy` tar + manifest from NAS into `/work`.
+2. `rclone copy` tar + manifest from HIVE into `/work`.
 3. SHA-256 the tar on `/work`, compare to manifest. Mismatch → leave for inspection, move on.
 4. `rsync` to `/archive`.
 5. SHA-256 on `/archive`, compare. Mismatch → leave both copies in place, fail.
@@ -205,48 +212,51 @@ on tape with correct sha256 = shipped).
 `--batch-budget-gb 17000` refuses to start an archive that would push `/work`
 past 17 TB — defensive cap on the 20 TB quota.
 
-### 5. Clean the NAS archives — you (any machine with rclone)
+### 4. Clean the HIVE archives — local server (any machine that can write to HIVE)
 
-Once `ship` has reported `failed=0` and `tape-archive verify` on the tape side
-confirms everything is intact, the NAS copy of `archives/` is redundant. Delete
-it; keep the catalog (manifests/ + catalog.html + summary.json + plan.yaml).
+Once `ship` has reported `failed=0`, the HIVE copy of `archives/` is
+redundant — tape is the home now. Delete it; keep everything else (the
+catalog: `manifests/` + `catalog.html` + `summary.json` + `plan.yaml`).
 
-```bash
-rclone purge nas_rcp:upoates/common/lab-archives-catalog/Ece-thesis-paper/archives
+```cmd
+:: from the local Windows server:
+rmdir /S /Q G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\Ece-thesis-movies\archives
 ```
 
-(You said you'd handle NAS cleanup, so `ship` doesn't do it automatically.)
-
-### 6. Regenerate the master index
-
-The master `index.html` aggregates every collection on the NAS into one
-clickable page. Walks recursively, so nested layouts (`group/project/<name>`)
-work too.
+Or from any machine with rclone access:
 
 ```bash
-# Easiest: pull a thin mirror of the catalog locally, regen, push back:
-LOCAL_MIRROR=/local/catalog-mirror
-mkdir -p $LOCAL_MIRROR
-
-rclone copy nas_rcp:upoates/common/lab-archives-catalog $LOCAL_MIRROR \
-  --exclude "*/archives/**"        # don't pull tars; we only need catalog files
-
-tape-archive index $LOCAL_MIRROR -o $LOCAL_MIRROR/index.html
-
-rclone copy $LOCAL_MIRROR/index.html \
-  nas_rcp:upoates/common/lab-archives-catalog/
+rclone purge hive-project02:PROJECTS-02/Clement/TMP-ARCHIVE-TO_SCITAS/Ece-thesis-movies/archives
 ```
 
-Done. Biologists open
-`nas_rcp:upoates/common/lab-archives-catalog/index.html` (or whatever URL maps
-to it in your environment) → click the `Ece-thesis-paper` card → browse the
-file tree → see which `.tar` to pull from tape.
+`ship` doesn't do this automatically — by design, since you wanted to keep
+the HIVE archives around until you've personally confirmed the tape ingest.
+
+### 5. Regenerate the master index
+
+The master `index.html` aggregates every collection under
+`TMP-ARCHIVE-TO_SCITAS/` into one clickable page. Walks recursively, so
+nested layouts (`group/project/<name>`) work too.
+
+```cmd
+:: on the local Windows server, in the conda env:
+tape-archive index G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS ^
+  -o G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\index.html
+```
+
+That's it — the index file lands next to the per-collection folders on HIVE.
+
+Biologists open
+`G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\index.html` (or via whatever
+URL/share path HIVE is exposed under in their environment) → click the
+`Ece-thesis-movies` card → browse the file tree → see which `.tar` to pull
+from tape.
 
 ---
 
 ## Next collection
 
-Same procedure with a new `NAME`, new plan. Step 6 picks up the new card
+Same procedure with a new `NAME`, new plan. Step 5 picks up the new card
 automatically.
 
 ---
@@ -255,11 +265,11 @@ automatically.
 
 `Ece-thesis-paper` is the easy case: one flat source dir, 29 archives all at
 depth 1, one plan. Larger datasets often have hierarchy — e.g.
-`Arianne` with multiple top-level subgroups, each containing its own
+`arianne` with multiple top-level subgroups, each containing its own
 experiments at varying depths. For those, run **one plan per logical
-subgroup**, and keep the hierarchy on NAS/tape mirroring the source.
+subgroup**, and keep the hierarchy on HIVE/tape mirroring the source.
 
-### Example: `Arianne` with three subgroups
+### Example: `arianne` with three subgroups
 
 ```text
 G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\arianne\
@@ -278,62 +288,57 @@ embeds the full file tree as JSON and gets sluggish past a few million entries.
 ### One iteration, for `arianne/group1/project_a`
 
 ```bash
-# 1. plan (on local server)
+# 1. plan (on the local Windows server)
 SUBROOT=G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\arianne\group1\project_a
 tape-archive planner "$SUBROOT" -o planner_arianne_group1_project_a.html
 # → open in browser, pick archive roots, Download → plan_arianne_group1_project_a.yaml
 
-# 2. compress
+# 2. compress — output lands on HIVE next to the source, mirroring the path
 tape-archive compress plan_arianne_group1_project_a.yaml \
   --zstd-level 3 --parallel 4 -v \
-  -o G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\arianne\group1\project_a__COMPRESSED
+  -o G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\arianne\group1\project_a
 
-# 3. push to NAS, MIRRORING the source path under lab-archives-catalog/
-rclone copy \
-  G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\arianne\group1\project_a__COMPRESSED \
-  nas_rcp:upoates/common/lab-archives-catalog/arianne/group1/project_a \
-  --transfers 4 --checkers 16 --progress
-
-# 4. on SCITAS, ship — note the path mirrors NAS and the source
+# 3. on SCITAS, ship directly from HIVE — paths mirror each other
 tape-archive ship \
-  --nas  nas_rcp:upoates/common/lab-archives-catalog/arianne/group1/project_a \
+  --nas  hive-project02:PROJECTS-02/Clement/TMP-ARCHIVE-TO_SCITAS/arianne/group1/project_a \
   --work /work/upoates/ship/arianne/group1/project_a \
   --tape /archive/upoates/lab-archives/arianne/group1/project_a \
   --batch-budget-gb 17000 -v
 
-# 5. clean NAS tars (you handle this)
-rclone purge \
-  nas_rcp:upoates/common/lab-archives-catalog/arianne/group1/project_a/archives
+# 4. delete the now-redundant archives/ on HIVE (catalog stays)
+rmdir /S /Q G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\arianne\group1\project_a\archives
 ```
 
 Repeat for `arianne/group1/project_b`, `arianne/group2/sub/data`, `arianne/group3`, etc.
 
 ### Final layout you end up with
 
-NAS (browsable, catalog only — no tars after cleanup):
+HIVE (browsable catalog — no tars after cleanup):
+
 ```text
-nas_rcp:upoates/common/lab-archives-catalog/
+G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\
 ├── index.html                      ← master page (recursive, sees everything below)
-├── Ece-thesis-paper/               (flat)
+├── Ece-thesis-movies\              (flat)
 │   ├── catalog.html
-│   └── manifests/, plan.yaml, summary.json
-├── arianne/
-│   ├── group1/
-│   │   ├── project_a/
+│   └── manifests\, plan.yaml, summary.json
+├── arianne\
+│   ├── group1\
+│   │   ├── project_a\
 │   │   │   └── catalog.html ...
-│   │   └── project_b/
+│   │   └── project_b\
 │   │       └── catalog.html ...
-│   ├── group2/sub/data/
+│   ├── group2\sub\data\
 │   │   └── catalog.html ...
-│   └── group3/
+│   └── group3\
 │       └── catalog.html ...
 └── ...
 ```
 
 Tape (parallel structure, just the tars):
+
 ```text
 /archive/upoates/lab-archives/
-├── Ece-thesis-paper/*.tar
+├── Ece-thesis-movies/*.tar
 └── arianne/
     ├── group1/project_a/*.tar
     ├── group1/project_b/*.tar
@@ -341,27 +346,38 @@ Tape (parallel structure, just the tars):
     └── group3/*.tar
 ```
 
-The master `index.html` on the NAS will pick up **every** collection no matter
+The master `index.html` on HIVE will pick up **every** collection no matter
 how deep, because `tape-archive index` walks recursively. Each card shows the
-full path relative to `lab-archives-catalog/`, so biologists see at a glance
+full path relative to `TMP-ARCHIVE-TO_SCITAS\`, so biologists see at a glance
 which subgroup a collection belongs to.
 
 ### Batch tip — script the loop
 
 Once you've generated all the plan YAMLs for one dataset, the
-compress/push/ship cycle is mechanical. A shell loop on the local server:
+compress + ship cycle is mechanical.
+
+On the local server (compress every plan):
 
 ```bash
 for plan in plan_arianne_*.yaml; do
-  # derive a name like "arianne_group1_project_a" from the plan filename
+  # derive the path under TMP-ARCHIVE-TO_SCITAS from the plan filename
   NAME=${plan#plan_}; NAME=${NAME%.yaml}
-  NAS_REL=$(echo "$NAME" | tr '_' '/')   # adjust if your naming differs
+  REL=$(echo "$NAME" | tr '_' '/')         # adjust if your naming differs
   tape-archive compress "$plan" \
-    -o "G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\${NAME}__COMPRESSED" \
+    -o "G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\${REL}" \
     --zstd-level 3 --parallel 4 -v
-  rclone copy "G:\...\${NAME}__COMPRESSED" \
-    "nas_rcp:upoates/common/lab-archives-catalog/${NAS_REL}" \
-    --transfers 4 --checkers 16 --progress
+done
+```
+
+On SCITAS (ship every collection):
+
+```bash
+for REL in arianne/group1/project_a arianne/group1/project_b arianne/group2/sub/data arianne/group3; do
+  tape-archive ship \
+    --nas  "hive-project02:PROJECTS-02/Clement/TMP-ARCHIVE-TO_SCITAS/${REL}" \
+    --work "/work/upoates/ship/${REL}" \
+    --tape "/archive/upoates/lab-archives/${REL}" \
+    --batch-budget-gb 17000 -v
 done
 ```
 
