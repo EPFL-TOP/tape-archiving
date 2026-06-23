@@ -153,6 +153,18 @@ def main(argv: list[str] | None = None) -> int:
                            help="Decompress N files concurrently (default 1).")
     p_restore.add_argument("-v", "--verbose", action="store_true")
 
+    p_serve = sub.add_parser(
+        "serve",
+        help="Run a local HTTP server hosting the catalog. Enables direct "
+             "notes-save from the browser (no file picker, no download).",
+    )
+    p_serve.add_argument("catalog_root", help="Directory containing index.html and per-collection folders")
+    p_serve.add_argument("--port", type=int, default=8080, help="TCP port (default 8080)")
+    p_serve.add_argument("--bind", default="127.0.0.1",
+                         help="Interface to bind (default 127.0.0.1 = localhost-only). "
+                              "Use 0.0.0.0 to allow other machines on the LAN.")
+    p_serve.add_argument("-v", "--verbose", action="store_true")
+
     p_marksh = sub.add_parser(
         "mark-shipped",
         help="Write shipped.json into a collection folder (for backfilling collections that "
@@ -351,6 +363,11 @@ def main(argv: list[str] | None = None) -> int:
             parallel=args.parallel,
         )
         return 0 if not results.get("failed") else 1
+
+    if args.cmd == "serve":
+        from .serve import serve
+        serve(args.catalog_root, host=args.bind, port=args.port)
+        return 0
 
     if args.cmd == "mark-shipped":
         import json as _json, socket

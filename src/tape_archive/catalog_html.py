@@ -630,15 +630,48 @@ function collectNotesFromForm() {
   return out;
 }
 
+function isServed() {
+  return location.protocol === 'http:' || location.protocol === 'https:';
+}
+
+async function refreshFromServer() {
+  // When the catalog is served via `tape-archive serve`, prefer the sidecar
+  // JSON files freshly read from disk over the (possibly stale) baked-in copies.
+  if (!isServed()) return;
+  try {
+    const [nResp, sResp] = await Promise.all([
+      fetch('notes.json', { cache: 'no-store' }).catch(() => null),
+      fetch('shipped.json', { cache: 'no-store' }).catch(() => null),
+    ]);
+    if (nResp && nResp.ok) NOTES = await nResp.json();
+    if (sResp && sResp.ok) Object.assign(SHIPPED, await sResp.json());
+  } catch (e) { console.warn('refreshFromServer:', e); }
+}
+
+async function trySaveViaServer(mergedNotes) {
+  if (!isServed()) return false;
+  // The collection's directory is the URL path without the trailing HTML file.
+  const collectionPath = location.pathname.replace(/\/[^/]+\.html?$/i, '/');
+  try {
+    const resp = await fetch('/api/save-notes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ collection_path: collectionPath, notes: mergedNotes }),
+    });
+    if (resp.ok) return true;
+    const text = await resp.text();
+    console.warn('server save responded', resp.status, text);
+  } catch (e) { console.warn('server save failed:', e); }
+  return false;
+}
+
 async function saveNotes() {
   const newData = collectNotesFromForm();
   let mergedNotes;
   if (editTarget.kind === 'collection') {
-    // Replace collection-level fields; preserve archives sub-object.
     mergedNotes = { ...newData };
     if (NOTES.archives) mergedNotes.archives = NOTES.archives;
   } else {
-    // Update a single archive's entry under archives.<name>.
     mergedNotes = { ...NOTES };
     if (!mergedNotes.archives) mergedNotes.archives = {};
     mergedNotes.archives = { ...mergedNotes.archives };
@@ -648,11 +681,23 @@ async function saveNotes() {
       mergedNotes.archives[editTarget.name] = newData;
     }
   }
-  const json = JSON.stringify(mergedNotes, null, 2);
   const hint = document.getElementById('save-hint');
   hint.style.display = 'block';
 
-  // Try the File System Access API first (Chromium browsers).
+  // 1) Best path: when served via `tape-archive serve`, POST directly. The
+  //    server writes notes.json and re-renders the catalog HTML, so reloads
+  //    (HTTP or file://) immediately show the new content.
+  if (await trySaveViaServer(mergedNotes)) {
+    NOTES = mergedNotes;
+    renderMeta(); renderArchivesMain();
+    hint.textContent = '✓ Saved.';
+    setTimeout(closeModal, 800);
+    return;
+  }
+
+  const json = JSON.stringify(mergedNotes, null, 2);
+
+  // 2) FSA (Chromium browsers).
   if (window.showSaveFilePicker) {
     try {
       const handle = await window.showSaveFilePicker({
@@ -711,7 +756,8 @@ function setupClipboard() {
   });
 }
 
-function init() {
+async function init() {
+  await refreshFromServer();
   renderMeta();
   renderArchivesMain();
   setupClipboard();

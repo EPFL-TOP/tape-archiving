@@ -481,24 +481,41 @@ Two optional sidecar JSON files live next to each collection's `summary.json`:
 - **`notes.json`** — operator/PI-supplied. Holds `description`, `pi`, `contact`,
   `tags[]`, `expires_at` (YYYY-MM-DD), `expiration_note`. All fields optional.
 
-### Adding notes from the catalog (no CLI needed)
+### Adding notes from the browser (no CLI needed)
 
-Open the collection's `catalog.html`. Click **✎ Edit notes** in the header.
-Fill in the form. **Save changes** does one of two things:
+**Recommended: run `tape-archive serve` once, get direct saves.**
+
+Open a terminal on any machine that can write to HIVE (the local Windows
+server is the obvious choice — that's where you ran compress):
+
+```cmd
+tape-archive serve G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS
+```
+
+The command stays running, hosting the catalog on `http://127.0.0.1:8080`.
+Open that URL in any browser → the master index loads → click any
+collection → edit notes (✎ at the header for collection notes, ✎ at any
+archive header for per-archive notes) → **Save**.
+
+What happens on Save: the browser POSTs the new `notes.json` straight to
+the server. The server writes the file to disk AND re-renders that
+collection's `catalog.html` with the updated content, so even later visits
+via `file://` see the change. No file picker, no download.
+
+`Ctrl-C` to stop the server when you're done.
+
+To let the PI access this from their own machine, swap `--bind 0.0.0.0` and
+open the firewall to your chosen port. Anyone on the LAN can then point
+their browser at `http://<your-hostname>:8080/`.
+
+**Without `serve`: it still works**, via the same form. Save behaviour
+falls back to:
 
 - **Chrome / Edge** (File System Access API): browser prompts for a file
-  location once, writes `notes.json` directly. From then on the page shows
-  the new notes immediately.
-- **Firefox / Safari**: downloads `notes.json`. Move it next to
-  `summary.json` in the collection's folder on HIVE.
-
-Either way, regenerate the catalog and master index on HIVE to bake the
-notes into the static HTML:
-
-```bash
-tape-archive catalog G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\Ece-thesis-movies
-tape-archive index   G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS
-```
+  location once, writes `notes.json` directly.
+- **Firefox / Safari**: downloads `notes.json`. Drop it next to
+  `summary.json` in the collection's folder on HIVE, then regenerate:
+  `tape-archive catalog <collection-dir>` + `tape-archive index <root>`.
 
 ### Backfilling shipped.json (for collections shipped before this feature)
 
@@ -537,6 +554,7 @@ tape-archive compress <plan.yaml> -o <out> --parallel N    # build archives + ma
 tape-archive verify <out>                                  # re-hash tars, compare to manifests
 tape-archive ship --nas <r:path> --work <p> --tape <p>     # NAS→/work→tape, one archive at a time
 tape-archive mark-shipped <coll-dir> --tape <p>            # write shipped.json for a collection (backfill or manual)
+tape-archive serve <catalog-root>                          # local HTTP server: direct notes saves from browser
 tape-archive catalog <out>                                 # rebuild one collection's catalog.html
 tape-archive index <catalog-root>                          # rebuild the master index.html
 ```

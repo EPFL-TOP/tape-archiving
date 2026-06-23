@@ -318,12 +318,29 @@ function renderGrid() {
   }
 }
 
+// Refresh per-collection notes/shipped from disk when running under
+// `tape-archive serve`. Falls back silently to baked-in data otherwise.
+async function refreshAllFromServer() {
+  if (location.protocol !== 'http:' && location.protocol !== 'https:') return;
+  await Promise.all(DATA.collections.map(async (c) => {
+    try {
+      const [n, s] = await Promise.all([
+        fetch(c.dir_name + '/notes.json',   { cache: 'no-store' }).catch(() => null),
+        fetch(c.dir_name + '/shipped.json', { cache: 'no-store' }).catch(() => null),
+      ]);
+      if (n && n.ok) c.notes = await n.json();
+      if (s && s.ok) c.shipped = await s.json();
+    } catch (e) { /* tolerate per-collection failures */ }
+  }));
+}
+
 let t;
 document.getElementById('filter').addEventListener('input', () => {
   clearTimeout(t);
   t = setTimeout(renderGrid, 150);
 });
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  await refreshAllFromServer();
   renderTotals();
   renderTabs();
   renderGrid();
