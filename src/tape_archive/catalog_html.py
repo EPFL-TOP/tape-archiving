@@ -267,6 +267,7 @@ button.copy.copied { background: #d4ecdc; color: #1a6c3b; }
 </head><body>
 <div class="nav-bar">
   <a href="__INDEX_URL__">← Back to lab archives index</a>
+  <span id="serve-status" style="margin-left:14px; font-size: 0.9em;"></span>
 </div>
 <header>
   <h1>tape-archive catalog</h1>
@@ -756,8 +757,19 @@ function setupClipboard() {
   });
 }
 
+function updateServeStatus() {
+  const el = document.getElementById('serve-status');
+  if (!el) return;
+  if (isServed()) {
+    el.innerHTML = '<span style="color:#1a6c3b">●</span> connected to <code>tape-archive serve</code> — saves write directly';
+  } else {
+    el.innerHTML = '<span style="color:#c93">●</span> opened via <code>file://</code> — saves will prompt (run <code>tape-archive serve</code> for direct writes)';
+  }
+}
+
 async function init() {
   await refreshFromServer();
+  updateServeStatus();
   renderMeta();
   renderArchivesMain();
   setupClipboard();

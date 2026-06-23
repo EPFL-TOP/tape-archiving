@@ -183,6 +183,7 @@ code { background: var(--code); padding: 1px 5px; border-radius: 4px;
   <h1>Lab archives</h1>
   <p>Catalog root: <code>__CATALOG_ROOT__</code></p>
   <p class="hint">Generated <code>__GENERATED_AT__</code>. Each card opens that collection's browsable catalog.</p>
+  <p id="serve-status" class="hint"></p>
   <div class="stats" id="totals"></div>
 </header>
 
@@ -318,6 +319,16 @@ function renderGrid() {
   }
 }
 
+function updateServeStatus() {
+  const el = document.getElementById('serve-status');
+  if (!el) return;
+  if (location.protocol === 'http:' || location.protocol === 'https:') {
+    el.innerHTML = '<span style="color:#1a6c3b">●</span> connected to <code>tape-archive serve</code> — notes saves write directly';
+  } else {
+    el.innerHTML = '<span style="color:#c93">●</span> opened via <code>file://</code> — run <code>tape-archive serve</code> and open <code>http://127.0.0.1:8080/index.html</code> for direct notes saves';
+  }
+}
+
 // Refresh per-collection notes/shipped from disk when running under
 // `tape-archive serve`. Falls back silently to baked-in data otherwise.
 async function refreshAllFromServer() {
@@ -340,6 +351,7 @@ document.getElementById('filter').addEventListener('input', () => {
   t = setTimeout(renderGrid, 150);
 });
 document.addEventListener('DOMContentLoaded', async () => {
+  updateServeStatus();
   await refreshAllFromServer();
   renderTotals();
   renderTabs();
