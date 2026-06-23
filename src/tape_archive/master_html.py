@@ -59,32 +59,48 @@ def _scan_collections(catalog_root: Path) -> list[dict]:
 
 def _load_or_build_summary(coll_dir: Path) -> dict | None:
     summary_path = coll_dir / "summary.json"
+    summary = None
     if summary_path.exists():
         try:
-            return json.loads(summary_path.read_text(encoding="utf-8"))
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            summary = None
+    if summary is None:
+        # Fallback: synthesise from manifests/
+        manifests_dir = coll_dir / "manifests"
+        if not manifests_dir.is_dir():
+            return None
+        manifests = []
+        for p in sorted(manifests_dir.glob("*.json")):
+            try:
+                manifests.append(json.loads(p.read_text(encoding="utf-8")))
+            except json.JSONDecodeError:
+                continue
+        if not manifests:
+            return None
+        summary = {
+            "name": coll_dir.name,
+            "compressed_at": min((m.get("created_at", "") for m in manifests), default=""),
+            "source_root": manifests[0].get("source_root", ""),
+            "archive_count": len(manifests),
+            "file_count": sum(m.get("file_count", 0) for m in manifests),
+            "source_bytes": sum(m.get("total_uncompressed_bytes", 0) for m in manifests),
+            "tape_bytes": sum(m.get("archive_size_bytes", 0) for m in manifests),
+        }
+    # Pull in shipped.json + notes.json side-by-side
+    shipped_path = coll_dir / "shipped.json"
+    if shipped_path.exists():
+        try:
+            summary["shipped"] = json.loads(shipped_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             pass
-    # Fallback: synthesise from manifests/
-    manifests_dir = coll_dir / "manifests"
-    if not manifests_dir.is_dir():
-        return None
-    manifests = []
-    for p in sorted(manifests_dir.glob("*.json")):
+    notes_path = coll_dir / "notes.json"
+    if notes_path.exists():
         try:
-            manifests.append(json.loads(p.read_text(encoding="utf-8")))
+            summary["notes"] = json.loads(notes_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
-            continue
-    if not manifests:
-        return None
-    return {
-        "name": coll_dir.name,
-        "compressed_at": min((m.get("created_at", "") for m in manifests), default=""),
-        "source_root": manifests[0].get("source_root", ""),
-        "archive_count": len(manifests),
-        "file_count": sum(m.get("file_count", 0) for m in manifests),
-        "source_bytes": sum(m.get("total_uncompressed_bytes", 0) for m in manifests),
-        "tape_bytes": sum(m.get("archive_size_bytes", 0) for m in manifests),
-    }
+            pass
+    return summary
 
 
 _HTML = r"""<!doctype html>
@@ -130,7 +146,24 @@ code { background: var(--code); padding: 1px 5px; border-radius: 4px;
 .card .source { color: var(--muted); font-size: 0.82em; margin-top: 4px;
                 word-break: break-all; }
 .card .ratio { font-size: 0.82em; color: var(--muted); }
+.card .description { font-size: 0.9em; margin-top: 6px; color: var(--fg); font-style: italic; }
+.card .pi { font-size: 0.85em; margin-top: 4px; }
+.card .tape-line { font-size: 0.78em; margin-top: 4px; color: var(--muted);
+                   font-family: ui-monospace, Menlo, monospace; word-break: break-all; }
+.card .tag { display: inline-block; background: #e3e5e8; color: var(--fg);
+             padding: 1px 7px; border-radius: 999px; font-size: 0.75em; margin: 2px 3px 0 0; }
+.card .status-badge { display: inline-block; padding: 1px 8px; border-radius: 4px;
+                      font-size: 0.78em; font-weight: 600; margin-top: 6px; }
+.status-active { background: #d4ecdc; color: #1a6c3b; }
+.status-expiring { background: #fff1cc; color: #8a6500; }
+.status-expired { background: #fad7d6; color: #8b1f1c; }
+.status-unshipped { background: #e3e5e8; color: var(--muted); }
 .empty { color: var(--muted); text-align: center; padding: 40px; }
+.tabs { display: flex; gap: 4px; margin-bottom: 14px; flex-wrap: wrap; }
+.tab { background: var(--card); border: 1px solid var(--border); padding: 6px 14px;
+       border-radius: 6px; cursor: pointer; font-size: 0.92em; color: var(--fg); }
+.tab.active { background: var(--accent); color: white; border-color: var(--accent); }
+.tab .count { opacity: 0.8; font-size: 0.85em; margin-left: 4px; }
 </style>
 </head><body>
 <header>
@@ -140,7 +173,9 @@ code { background: var(--code); padding: 1px 5px; border-radius: 4px;
   <div class="stats" id="totals"></div>
 </header>
 
-<input id="filter" type="text" placeholder="Filter by collection name or source path… (case-insensitive)">
+<input id="filter" type="text" placeholder="Filter by collection name, source path, PI, or tag… (case-insensitive)">
+
+<div class="tabs" id="tabs"></div>
 
 <section>
   <div class="grid" id="grid"></div>
@@ -177,15 +212,61 @@ function renderTotals() {
   `;
 }
 
+function expirationStatus(c) {
+  // 'unshipped' wins if no shipped.json: action item for the operator.
+  if (!c.shipped || !c.shipped.tape_root) return { kind: 'unshipped', label: 'Not on tape' };
+  const notes = c.notes;
+  if (!notes || !notes.expires_at) return { kind: 'active', label: 'Active' };
+  const expDate = new Date(notes.expires_at);
+  if (isNaN(expDate)) return { kind: 'active', label: 'Active' };
+  const days = Math.round((expDate - new Date()) / (1000 * 60 * 60 * 24));
+  if (days < 0) return { kind: 'expired', label: `Expired ${-days}d ago` };
+  if (days <= 90) return { kind: 'expiring', label: `Expiring in ${days}d` };
+  return { kind: 'active', label: `Active until ${notes.expires_at}` };
+}
+
+let activeTab = 'all';
+
+function matchesText(c, filter) {
+  if (!filter) return true;
+  const text = filter.toLowerCase();
+  const fields = [
+    c.name, c.dir_name, c.source_root,
+    c.notes && c.notes.pi, c.notes && c.notes.description,
+    ...(c.notes && c.notes.tags ? c.notes.tags : []),
+  ];
+  return fields.some(v => v && String(v).toLowerCase().includes(text));
+}
+
+function renderTabs() {
+  const counts = { all: DATA.collections.length, active: 0, expiring: 0, expired: 0, unshipped: 0 };
+  for (const c of DATA.collections) counts[expirationStatus(c).kind]++;
+  const tabs = [
+    ['all', 'All'],
+    ['active', 'Active'],
+    ['expiring', 'Expiring (≤90d)'],
+    ['expired', 'Expired'],
+    ['unshipped', 'Not on tape'],
+  ];
+  const el = document.getElementById('tabs');
+  el.innerHTML = '';
+  for (const [key, label] of tabs) {
+    const b = document.createElement('button');
+    b.className = 'tab' + (key === activeTab ? ' active' : '');
+    b.innerHTML = `${label}<span class="count">${counts[key]}</span>`;
+    b.addEventListener('click', () => { activeTab = key; renderTabs(); renderGrid(); });
+    el.appendChild(b);
+  }
+}
+
 function renderGrid() {
   const filter = (document.getElementById('filter').value || '').toLowerCase();
   const grid = document.getElementById('grid');
   grid.innerHTML = '';
-  const visible = DATA.collections.filter(c =>
-    !filter ||
-    (c.name || c.dir_name || '').toLowerCase().includes(filter) ||
-    (c.source_root || '').toLowerCase().includes(filter)
-  );
+  const visible = DATA.collections.filter(c => {
+    if (activeTab !== 'all' && expirationStatus(c).kind !== activeTab) return false;
+    return matchesText(c, filter);
+  });
   if (visible.length === 0) {
     grid.innerHTML = '<div class="empty">No collections match.</div>';
     return;
@@ -198,12 +279,27 @@ function renderGrid() {
     const a = document.createElement('a');
     a.className = 'card';
     a.href = c.catalog_url;
+    const notes = c.notes || {};
+    const status = expirationStatus(c);
+    const descLine = notes.description
+      ? `<div class="description">${escapeHtml(notes.description)}</div>` : '';
+    const piLine = notes.pi
+      ? `<div class="pi"><strong>PI:</strong> ${escapeHtml(notes.pi)}</div>` : '';
+    const tagsLine = (notes.tags && notes.tags.length)
+      ? `<div class="meta">${notes.tags.map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('')}</div>` : '';
+    const tapeLine = (c.shipped && c.shipped.tape_root)
+      ? `<div class="tape-line">📼 ${escapeHtml(c.shipped.tape_root)}</div>` : '';
     a.innerHTML = `
       <h3>${escapeHtml(name)}</h3>
+      ${descLine}
+      ${piLine}
       <div class="meta">${c.archive_count} archives · ${c.file_count.toLocaleString()} files</div>
       <div class="meta">${fmtSize(c.source_bytes)} → ${fmtSize(c.tape_bytes)} <span class="ratio">(${ratioStr})</span></div>
       <div class="meta">Compressed ${fmtDate(c.compressed_at)}</div>
+      ${tapeLine}
+      ${tagsLine}
       <div class="source">${escapeHtml(c.source_root || '')}</div>
+      <div><span class="status-badge status-${status.kind}">${escapeHtml(status.label)}</span></div>
     `;
     grid.appendChild(a);
   }
@@ -216,6 +312,7 @@ document.getElementById('filter').addEventListener('input', () => {
 });
 document.addEventListener('DOMContentLoaded', () => {
   renderTotals();
+  renderTabs();
   renderGrid();
 });
 </script>

@@ -10,8 +10,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import socket
 import subprocess
+import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 log = logging.getLogger("tape_archive.ship")
@@ -178,7 +182,44 @@ def ship(
              elapsed, len(results["shipped"]), len(results["skipped"]), len(results["failed"]))
     for f in results["failed"]:
         log.error("  FAIL %s: %s", f["name"], f["reason"])
+
+    # Write shipped.json back to the catalog (the --nas location) when every
+    # archive listed in summary.json is now on tape with the right sha256.
+    total_in_summary = len(archives)
+    fully_shipped = (
+        not results["failed"]
+        and (len(results["shipped"]) + len(results["skipped"])) == total_in_summary
+    )
+    if fully_shipped:
+        shipped_doc = {
+            "shipped_at": datetime.now(tz=timezone.utc).isoformat(),
+            "tape_root": str(tape),
+            "host": socket.gethostname(),
+            "archive_count": total_in_summary,
+        }
+        try:
+            _push_json_to_catalog(nas, "shipped.json", shipped_doc)
+            log.info("wrote shipped.json -> %s/shipped.json", nas)
+        except subprocess.CalledProcessError as e:
+            log.warning("could not push shipped.json to %s (rc=%d); "
+                        "run `tape-archive mark-shipped` manually", nas, e.returncode)
     return results
+
+
+def _push_json_to_catalog(nas: str, filename: str, payload: dict) -> None:
+    """rclone-copy a small JSON file into the catalog root."""
+    fd, tmp_path = tempfile.mkstemp(prefix="tape-archive-", suffix=".json")
+    os.close(fd)
+    try:
+        Path(tmp_path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        cmd = ["rclone", "copyto", tmp_path, f"{nas}/{filename}"]
+        log.debug("$ %s", " ".join(cmd))
+        subprocess.run(cmd, check=True)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
 
 # ---------- rclone shims ----------

@@ -151,6 +151,16 @@ def main(argv: list[str] | None = None) -> int:
                            help="Decompress N files concurrently (default 1).")
     p_restore.add_argument("-v", "--verbose", action="store_true")
 
+    p_marksh = sub.add_parser(
+        "mark-shipped",
+        help="Write shipped.json into a collection folder (for backfilling collections that "
+             "shipped before this feature existed, or recording a manual rsync to tape).",
+    )
+    p_marksh.add_argument("collection_dir", help="Local path to the collection's catalog folder")
+    p_marksh.add_argument("--tape", required=True, help="Tape destination path (e.g. /archive/upoates/lab-archives/Ece-thesis-movies)")
+    p_marksh.add_argument("--host", help="Override host name (default: this machine)")
+    p_marksh.add_argument("-v", "--verbose", action="store_true")
+
     p_ship = sub.add_parser(
         "ship",
         help="Ship one collection's archives from NAS to tape via /work (rclone copy → verify → rsync → verify → delete).",
@@ -339,6 +349,32 @@ def main(argv: list[str] | None = None) -> int:
             parallel=args.parallel,
         )
         return 0 if not results.get("failed") else 1
+
+    if args.cmd == "mark-shipped":
+        import json as _json, socket
+        from datetime import datetime, timezone
+        coll = Path(args.collection_dir)
+        if not coll.is_dir():
+            raise SystemExit(f"not a directory: {coll}")
+        # archive_count from summary.json if available
+        summary_path = coll / "summary.json"
+        n_archives = 0
+        if summary_path.exists():
+            try:
+                n_archives = len(_json.loads(summary_path.read_text(encoding="utf-8")).get("archives", []))
+            except _json.JSONDecodeError:
+                pass
+        doc = {
+            "shipped_at": datetime.now(tz=timezone.utc).isoformat(),
+            "tape_root": args.tape,
+            "host": args.host or socket.gethostname(),
+            "archive_count": n_archives,
+            "source": "mark-shipped",
+        }
+        out = coll / "shipped.json"
+        out.write_text(_json.dumps(doc, indent=2), encoding="utf-8")
+        print(f"wrote {out}", file=sys.stderr)
+        return 0
 
     if args.cmd == "ship":
         from .ship import ship

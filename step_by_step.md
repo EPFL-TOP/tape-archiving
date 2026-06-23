@@ -471,6 +471,62 @@ each archive is one chunk at a time.
 
 ---
 
+## Annotations, tape destination, expirations
+
+Two optional sidecar JSON files live next to each collection's `summary.json`:
+
+- **`shipped.json`** — written automatically by `ship` after a clean run.
+  Records `tape_root`, `shipped_at`, `host`, `archive_count`. The catalog and
+  master index pick it up and show "📼 on tape at …" + the shipped date.
+- **`notes.json`** — operator/PI-supplied. Holds `description`, `pi`, `contact`,
+  `tags[]`, `expires_at` (YYYY-MM-DD), `expiration_note`. All fields optional.
+
+### Adding notes from the catalog (no CLI needed)
+
+Open the collection's `catalog.html`. Click **✎ Edit notes** in the header.
+Fill in the form. **Save changes** does one of two things:
+
+- **Chrome / Edge** (File System Access API): browser prompts for a file
+  location once, writes `notes.json` directly. From then on the page shows
+  the new notes immediately.
+- **Firefox / Safari**: downloads `notes.json`. Move it next to
+  `summary.json` in the collection's folder on HIVE.
+
+Either way, regenerate the catalog and master index on HIVE to bake the
+notes into the static HTML:
+
+```bash
+tape-archive catalog G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\Ece-thesis-movies
+tape-archive index   G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS
+```
+
+### Backfilling shipped.json (for collections shipped before this feature)
+
+```cmd
+tape-archive mark-shipped ^
+  G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\Ece-thesis-movies ^
+  --tape /archive/upoates/lab-archives/Ece-thesis-movies
+```
+
+Writes `shipped.json` directly in the collection folder. Re-run
+`tape-archive index ...` to surface it in the master page.
+
+### Expiration tabs
+
+The master index shows tabs **All / Active / Expiring (≤90 d) / Expired /
+Not on tape** with counts. The "Expiring" and "Expired" tabs are where the
+PI can scan for review actions. Status is derived from `notes.expires_at`
+at generation time; if the date is absent, the collection is "Active".
+
+### Click-to-copy restore command
+
+Every archive card in the per-collection catalog now has a "📋 copy restore
+command" button. It puts the exact two-line shell snippet for restoring
+that .tar (cp from tape + `tape-archive restore`) on the clipboard, ready
+to paste.
+
+---
+
 ## Command reference
 
 ```text
@@ -480,6 +536,7 @@ tape-archive plan <path> --level position -o plan.yaml     # heuristic plan (aut
 tape-archive compress <plan.yaml> -o <out> --parallel N    # build archives + manifests + catalog
 tape-archive verify <out>                                  # re-hash tars, compare to manifests
 tape-archive ship --nas <r:path> --work <p> --tape <p>     # NAS→/work→tape, one archive at a time
+tape-archive mark-shipped <coll-dir> --tape <p>            # write shipped.json for a collection (backfill or manual)
 tape-archive catalog <out>                                 # rebuild one collection's catalog.html
 tape-archive index <catalog-root>                          # rebuild the master index.html
 ```
