@@ -21,8 +21,8 @@ def render_catalog(output_dir: Path, html_path: Path, *, index_url: str = "../in
     if not manifests:
         raise FileNotFoundError(f"no manifests found under {output_dir / 'manifests'}")
 
-    tree = _build_tree(manifests)
-    archives_summary = _archives_summary(manifests)
+    archives_data = _archives_data(manifests)
+    total_bytes, total_files = _aggregate_totals(archives_data)
     source_root = manifests[0].get("source_root", "")
     shipped = _load_json(output_dir / "shipped.json")    # may be None
     notes = _load_json(output_dir / "notes.json")        # may be None
@@ -31,15 +31,14 @@ def render_catalog(output_dir: Path, html_path: Path, *, index_url: str = "../in
         return json.dumps(payload, separators=(",", ":")).replace("</", "<\\/")
 
     doc = _HTML
-    doc = doc.replace("__TREE_DATA_JSON__", _js(tree))
-    doc = doc.replace("__ARCHIVES_JSON__", _js(archives_summary))
+    doc = doc.replace("__ARCHIVES_DATA_JSON__", _js(archives_data))
     doc = doc.replace("__SHIPPED_JSON__", _js(shipped or {}))
     doc = doc.replace("__NOTES_JSON__", _js(notes or {}))
     doc = doc.replace("__SOURCE_ROOT__", html.escape(source_root))
     doc = doc.replace("__GENERATED_AT__", datetime.now(tz=timezone.utc).isoformat())
-    doc = doc.replace("__TOTAL_SOURCE_BYTES__", str(tree["size_subtree"]))
-    doc = doc.replace("__TOTAL_FILES__", str(tree["file_count_subtree"]))
-    doc = doc.replace("__TOTAL_ARCHIVES__", str(len(manifests)))
+    doc = doc.replace("__TOTAL_SOURCE_BYTES__", str(total_bytes))
+    doc = doc.replace("__TOTAL_FILES__", str(total_files))
+    doc = doc.replace("__TOTAL_ARCHIVES__", str(len(archives_data)))
     doc = doc.replace("__INDEX_URL__", html.escape(index_url))
     html_path.write_text(doc, encoding="utf-8")
 
@@ -65,9 +64,13 @@ def _load_manifests(manifests_dir: Path) -> list[dict]:
     return out
 
 
-def _archives_summary(manifests: list[dict]) -> list[dict]:
-    return [
-        {
+def _archives_data(manifests: list[dict]) -> list[dict]:
+    """Per-archive summary AND its own file tree. The catalog displays one
+    collapsible section per archive, each containing its tree."""
+    out = []
+    for m in manifests:
+        tree = _build_archive_tree(m.get("files", []))
+        out.append({
             "name": m["archive"].removesuffix(".tar"),
             "tar": m["archive"],
             "sha256": m.get("archive_sha256", ""),
@@ -75,33 +78,37 @@ def _archives_summary(manifests: list[dict]) -> list[dict]:
             "file_count": m.get("file_count", 0),
             "source_bytes": m.get("total_uncompressed_bytes", 0),
             "compressed_bytes": m.get("total_compressed_bytes", 0),
-        }
-        for m in manifests
-    ]
+            "tree": tree,
+        })
+    return out
 
 
-def _build_tree(manifests: list[dict]) -> dict:
+def _build_archive_tree(files: list[dict]) -> dict:
     root = _new_node(".", ".")
-    for m in manifests:
-        archive_name = m["archive"].removesuffix(".tar")
-        for f in m["files"]:
-            parts = f["path"].split("/")
-            node = root
-            for i, part in enumerate(parts[:-1]):
-                child = node["_kids"].get(part)
-                if child is None:
-                    child = _new_node(part, "/".join(parts[: i + 1]))
-                    node["_kids"][part] = child
-                node = child
-            node["files"].append({
-                "name": parts[-1],
-                "size": f["size_bytes"],
-                "sha256": f["sha256"],
-                "compressed_size": f["compressed_bytes"],
-                "archive": archive_name,
-            })
+    for f in files:
+        parts = f["path"].split("/")
+        node = root
+        for i, part in enumerate(parts[:-1]):
+            child = node["_kids"].get(part)
+            if child is None:
+                child = _new_node(part, "/".join(parts[: i + 1]))
+                node["_kids"][part] = child
+            node = child
+        node["files"].append({
+            "name": parts[-1],
+            "size": f["size_bytes"],
+            "sha256": f["sha256"],
+            "compressed_size": f["compressed_bytes"],
+        })
     _finalize(root)
     return root
+
+
+def _aggregate_totals(archives_data: list[dict]) -> tuple[int, int]:
+    """Total source bytes + file count across all archives."""
+    total_bytes = sum(a["source_bytes"] for a in archives_data)
+    total_files = sum(a["file_count"] for a in archives_data)
+    return total_bytes, total_files
 
 
 def _new_node(name: str, path: str) -> dict:
@@ -161,47 +168,60 @@ code { background: var(--code); padding: 1px 5px; border-radius: 4px;
        font-size: 0.92em; word-break: break-all; }
 .hint { color: var(--muted); font-size: 0.88em; }
 
-main { display: grid; grid-template-columns: 1fr 380px; gap: 12px;
-       align-items: start; }
-@media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+main { background: var(--card); border: 1px solid var(--border);
+       border-radius: 8px; padding: 14px 18px; }
 
-#tree { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 0.92em; max-height: 80vh; overflow-y: auto; }
-#tree details { margin-left: 14px; }
-#tree > details { margin-left: 0; }
-#tree summary { cursor: pointer; padding: 2px 4px; list-style: none;
-                border-radius: 4px; }
-#tree summary:hover { background: #f5f6f7; }
-#tree summary::-webkit-details-marker { display: none; }
-#tree summary::before { content: '▸'; display: inline-block; width: 1em;
-                        color: var(--muted); transition: transform .1s; }
-#tree details[open] > summary::before { transform: rotate(90deg); }
-#tree .name { font-weight: 600; }
-#tree .meta { color: var(--muted); }
-#tree ul { list-style: none; padding-left: 14px; margin: 0;
-           border-left: 1px dashed var(--border); }
-#tree ul.files { padding-left: 22px; border-left: none; }
-#tree ul.files li { padding: 2px 0; color: #444; display: flex;
-                    gap: 8px; flex-wrap: wrap; align-items: baseline; }
-#tree .file-name { font-weight: normal; color: var(--fg); }
-#tree .sha { color: #6b7280; font-size: 0.85em; }
-#tree .arch-link { background: var(--accent); color: white;
-                   padding: 1px 8px; border-radius: 4px; font-size: 0.82em;
-                   cursor: pointer; user-select: none; }
-#tree .arch-link:hover { filter: brightness(1.1); }
-
-#filter { width: 100%; padding: 8px 10px; margin-bottom: 10px;
+#filter { width: 100%; padding: 8px 10px; margin-bottom: 12px;
           border: 1px solid var(--border); border-radius: 6px; font-size: 14px; }
 
-#archives-list { font-size: 0.88em; }
-.archive-row { border: 1px solid var(--border); border-radius: 6px;
-               padding: 6px 10px; margin-bottom: 6px; }
-.archive-row .arch-name { font-family: ui-monospace, Menlo, monospace;
-                          font-weight: 600; word-break: break-all; }
-.archive-row .arch-meta { color: var(--muted); margin-top: 2px; }
-.archive-row code.sha { display: block; margin-top: 2px;
-                        color: #6b7280; font-size: 0.82em; word-break: break-all; }
-.archive-row.highlight { background: #fff8eb; border-color: #e0c878; }
+.archive-section { border: 1px solid var(--border); border-radius: 6px;
+                   margin-bottom: 8px; background: #fcfcfd; }
+.archive-section > summary {
+  cursor: pointer; padding: 10px 12px; list-style: none; border-radius: 6px;
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;
+}
+.archive-section > summary:hover { background: #f5f6f7; }
+.archive-section > summary::-webkit-details-marker { display: none; }
+.archive-section > summary::before { content: '▸'; display: inline-block;
+                                     width: 1em; color: var(--muted);
+                                     transition: transform .1s; }
+.archive-section[open] > summary::before { transform: rotate(90deg); }
+.archive-section .arch-name {
+  font-family: ui-monospace, Menlo, monospace; font-weight: 600;
+  word-break: break-all; flex: 1; min-width: 200px;
+}
+.archive-section .arch-stats { color: var(--muted); font-size: 0.88em; }
+.archive-section .arch-actions { margin-left: auto; }
+.archive-section .arch-actions button { margin-left: 4px; }
+.archive-section .arch-body { padding: 8px 14px 14px 32px;
+                              border-top: 1px solid var(--border); }
+.archive-section .arch-meta-line { color: var(--muted); font-size: 0.85em;
+                                   margin-bottom: 6px; word-break: break-all; }
+.archive-section .arch-notes-inline {
+  background: #f5f7fa; border-left: 3px solid var(--accent);
+  padding: 6px 10px; margin: 4px 0 8px 0; border-radius: 4px; font-size: 0.9em;
+}
+
+.tree { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.9em; }
+.tree details { margin-left: 14px; }
+.tree > details { margin-left: 0; }
+.tree summary { cursor: pointer; padding: 1px 4px; list-style: none;
+                border-radius: 4px; }
+.tree summary:hover { background: #f5f6f7; }
+.tree summary::-webkit-details-marker { display: none; }
+.tree summary::before { content: '▸'; display: inline-block; width: 1em;
+                        color: var(--muted); transition: transform .1s; }
+.tree details[open] > summary::before { transform: rotate(90deg); }
+.tree .name { font-weight: 600; }
+.tree .meta { color: var(--muted); }
+.tree ul { list-style: none; padding-left: 14px; margin: 0;
+           border-left: 1px dashed var(--border); }
+.tree ul.files { padding-left: 22px; border-left: none; }
+.tree ul.files li { padding: 1px 0; color: #444; display: flex;
+                    gap: 8px; flex-wrap: wrap; align-items: baseline; }
+.tree .file-name { font-weight: normal; color: var(--fg); }
+.tree .sha { color: #6b7280; font-size: 0.85em; }
 .notes-block { background: #f5f7fa; border-left: 3px solid var(--accent);
                padding: 8px 12px; margin: 8px 0; border-radius: 4px; }
 .notes-block .field { margin: 2px 0; }
@@ -257,30 +277,24 @@ button.copy.copied { background: #d4ecdc; color: #1a6c3b; }
   <div style="margin-top: 8px;">
     <button class="action" id="edit-notes-btn">✎ Edit notes</button>
   </div>
-  <p class="hint">Click a folder to expand. Each file shows its SHA-256 (of the original, uncompressed bytes) and the archive that holds it. Click an archive badge to highlight that archive in the right panel.</p>
+  <p class="hint">Each archive expands to show the files it contains, their SHA-256 (of the original uncompressed bytes), and a copy-restore command. Use the filter to search across all archives.</p>
 </header>
 
 <main>
-  <div id="tree-panel">
-    <h2>Files</h2>
-    <input id="filter" type="text" placeholder="Filter by filename or path… (case-insensitive)">
-    <div id="tree"></div>
-  </div>
-
-  <aside id="archives-panel">
-    <h2>Archives</h2>
-    <div id="archives-list"></div>
-  </aside>
+  <input id="filter" type="text" placeholder="Filter files / archives by name, path, or sha256… (case-insensitive)">
+  <div id="archives-main"></div>
 </main>
 
-<!-- Edit-notes modal -->
+<!-- Edit-notes modal: handles both collection-level and per-archive notes -->
 <div class="modal-backdrop" id="modal">
   <div class="modal">
-    <h3>Edit notes</h3>
-    <p class="hint">These travel with the catalog as <code>notes.json</code>. The PI / operator sees them on the master index and at the top of this catalog.</p>
+    <h3 id="modal-title">Edit notes</h3>
+    <p class="hint" id="modal-hint">These travel with the catalog as <code>notes.json</code>.</p>
     <label>Description<textarea id="n-description" rows="3" placeholder="Free-form description"></textarea></label>
-    <label>PI<input id="n-pi" type="text" placeholder="e.g. Andy Oates"></label>
-    <label>Contact<input id="n-contact" type="text" placeholder="email"></label>
+    <div id="collection-only-fields">
+      <label>PI<input id="n-pi" type="text" placeholder="e.g. Andy Oates"></label>
+      <label>Contact<input id="n-contact" type="text" placeholder="email"></label>
+    </div>
     <label>Tags (comma-separated)<input id="n-tags" type="text" placeholder="microscopy, wscpaper, ece"></label>
     <label>Expires at<input id="n-expires" type="date"></label>
     <label>Expiration note<input id="n-expnote" type="text" placeholder="Reason / next review action"></label>
@@ -293,10 +307,11 @@ button.copy.copied { background: #d4ecdc; color: #1a6c3b; }
 </div>
 
 <script>
-const TREE_DATA = __TREE_DATA_JSON__;
-const ARCHIVES = __ARCHIVES_JSON__;
+const ARCHIVES_DATA = __ARCHIVES_DATA_JSON__;
 const SHIPPED = __SHIPPED_JSON__;
 let NOTES = __NOTES_JSON__;
+// Track what's currently being edited in the modal.
+let editTarget = { kind: 'collection' };  // or { kind: 'archive', name: '<archive-name>' }
 
 function fmtSize(b) {
   let s = b;
@@ -312,18 +327,8 @@ function escapeHtml(s) {
 
 let filterText = '';
 
-function renderTree() {
-  const container = document.getElementById('tree');
-  container.innerHTML = '';
-  // No filter active → lazy: only the root and its direct children's stubs.
-  // Filter active → eager-but-pruned: render every subtree that matches.
-  const node = filterText ? renderNodeFiltered(TREE_DATA, true)
-                          : renderNodeLazy(TREE_DATA, true);
-  if (node) container.appendChild(node);
-  else container.innerHTML = '<div class="hint">No matches.</div>';
-}
-
-function buildSummary(node, isRoot) {
+// ---------- file-tree rendering inside one archive ----------
+function buildTreeSummary(node, isRoot) {
   const sum = document.createElement('summary');
   const name = document.createElement('span');
   name.className = 'name';
@@ -341,15 +346,14 @@ function buildFileLi(f) {
   li.innerHTML =
     '<span class="file-name">' + escapeHtml(f.name) + '</span>' +
     '<span class="meta">[' + fmtSize(f.size) + ']</span>' +
-    '<span class="sha" title="SHA-256 of original (uncompressed) bytes">' + f.sha256.slice(0, 16) + '…</span>' +
-    '<span class="arch-link" data-archive="' + escapeHtml(f.archive) + '">' + escapeHtml(f.archive) + '</span>';
+    '<span class="sha" title="SHA-256 of original (uncompressed) bytes">' + f.sha256.slice(0, 16) + '…</span>';
   return li;
 }
 
 function renderNodeLazy(node, isRoot) {
   const det = document.createElement('details');
   if (isRoot) det.open = true;
-  det.appendChild(buildSummary(node, isRoot));
+  det.appendChild(buildTreeSummary(node, isRoot));
   let rendered = false;
   function expand() {
     if (rendered) return;
@@ -370,16 +374,12 @@ function renderNodeLazy(node, isRoot) {
       det.appendChild(ul);
     }
   }
-  if (isRoot) {
-    expand();
-  } else {
-    det.addEventListener('toggle', () => { if (det.open) expand(); });
-  }
+  if (isRoot) expand();
+  else det.addEventListener('toggle', () => { if (det.open) expand(); });
   return det;
 }
 
 function renderNodeFiltered(node, isRoot) {
-  // Returns <details> only if this subtree has any match; otherwise null.
   const f = filterText;
   const dirSelfMatches = node.path.toLowerCase().includes(f);
   const matchingFiles = (node.files || []).filter(file =>
@@ -396,8 +396,8 @@ function renderNodeFiltered(node, isRoot) {
     return null;
   }
   const det = document.createElement('details');
-  det.open = true;   // filter mode: always expand matches
-  det.appendChild(buildSummary(node, isRoot));
+  det.open = true;
+  det.appendChild(buildTreeSummary(node, isRoot));
   if (childResults.length) {
     const ul = document.createElement('ul');
     for (const child of childResults) {
@@ -416,37 +416,122 @@ function renderNodeFiltered(node, isRoot) {
   return det;
 }
 
-function renderArchives() {
-  const list = document.getElementById('archives-list');
-  list.innerHTML = '';
-  const sorted = [...ARCHIVES].sort((a, b) => b.size_bytes - a.size_bytes);
+// ---------- per-archive sections ----------
+function archiveNotes(name) {
+  return (NOTES.archives && NOTES.archives[name]) || {};
+}
+
+function renderArchivesMain() {
+  const container = document.getElementById('archives-main');
+  container.innerHTML = '';
   const tapeRoot = SHIPPED && SHIPPED.tape_root;
+  const sorted = [...ARCHIVES_DATA].sort((a, b) => b.size_bytes - a.size_bytes);
+  let shown = 0;
   for (const a of sorted) {
-    const div = document.createElement('div');
-    div.className = 'archive-row';
-    div.id = 'arch-' + a.name;
-    let restoreBlock = '';
-    if (tapeRoot) {
-      const tarFull = tapeRoot.replace(/\/$/, '') + '/' + a.tar;
-      const restoreCmd =
-        'cp ' + tarFull + ' /restore/ && tape-archive restore /restore/' + a.tar +
-        ' -o /restore/' + a.name + ' --parallel 4';
-      restoreBlock =
-        '<div class="arch-meta" style="margin-top:4px;">' +
-          '<button class="copy" data-cmd="' + escapeHtml(restoreCmd) + '">📋 copy restore command</button>' +
-        '</div>';
-    }
-    div.innerHTML =
-      '<div class="arch-name">' + escapeHtml(a.tar) + '</div>' +
-      '<div class="arch-meta">' + fmtSize(a.size_bytes) + ' on tape · ' +
-        fmtSize(a.source_bytes) + ' source · ' +
-        a.file_count.toLocaleString() + ' files · ' +
-        'ratio ' + (a.size_bytes / Math.max(a.source_bytes, 1) * 100).toFixed(1) + '%' +
-      '</div>' +
-      '<code class="sha">sha256: ' + escapeHtml(a.sha256) + '</code>' +
-      restoreBlock;
-    list.appendChild(div);
+    const section = renderArchiveSection(a, tapeRoot);
+    if (section) { container.appendChild(section); shown++; }
   }
+  if (shown === 0) container.innerHTML = '<div class="hint">No archives match the filter.</div>';
+}
+
+function renderArchiveSection(a, tapeRoot) {
+  // When filtering, pre-compute the filtered tree so we know whether to show
+  // this archive at all. archive name/sha256 also count as a match.
+  let preFilteredTree = null;
+  if (filterText) {
+    const archMatches = a.name.toLowerCase().includes(filterText) ||
+                        a.tar.toLowerCase().includes(filterText) ||
+                        (a.sha256 || '').toLowerCase().includes(filterText);
+    preFilteredTree = renderNodeFiltered(a.tree, true);
+    if (!archMatches && !preFilteredTree) return null;
+    if (!preFilteredTree && archMatches) {
+      // archive itself matches but no files — render full tree lazily
+      preFilteredTree = null;
+    }
+  }
+
+  const det = document.createElement('details');
+  det.className = 'archive-section';
+  det.dataset.archive = a.name;
+  if (filterText) det.open = true;
+
+  const sum = document.createElement('summary');
+  const nameEl = document.createElement('span');
+  nameEl.className = 'arch-name';
+  nameEl.textContent = a.tar;
+  sum.appendChild(nameEl);
+
+  const stats = document.createElement('span');
+  stats.className = 'arch-stats';
+  const ratio = (a.size_bytes / Math.max(a.source_bytes, 1) * 100).toFixed(1);
+  stats.textContent = `${fmtSize(a.size_bytes)} on tape · ${fmtSize(a.source_bytes)} source · ${a.file_count.toLocaleString()} files · ratio ${ratio}%`;
+  sum.appendChild(stats);
+
+  const actions = document.createElement('span');
+  actions.className = 'arch-actions';
+  if (tapeRoot) {
+    const tarFull = tapeRoot.replace(/\/$/, '') + '/' + a.tar;
+    const cmd = `cp ${tarFull} /restore/ && tape-archive restore /restore/${a.tar} -o /restore/${a.name} --parallel 4`;
+    const btn = document.createElement('button');
+    btn.className = 'copy';
+    btn.dataset.cmd = cmd;
+    btn.textContent = '📋 copy restore';
+    btn.addEventListener('click', e => e.stopPropagation());  // don't toggle details
+    actions.appendChild(btn);
+  }
+  const notesBtn = document.createElement('button');
+  notesBtn.className = 'copy edit-archive-notes';
+  notesBtn.textContent = '✎ notes';
+  notesBtn.dataset.archive = a.name;
+  notesBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    openModal({ kind: 'archive', name: a.name });
+  });
+  actions.appendChild(notesBtn);
+  sum.appendChild(actions);
+  det.appendChild(sum);
+
+  // Body: lazy on open, eager when filtering.
+  let bodyRendered = false;
+  function renderBody() {
+    if (bodyRendered) return;
+    bodyRendered = true;
+    const body = document.createElement('div');
+    body.className = 'arch-body';
+    const metaLine = document.createElement('div');
+    metaLine.className = 'arch-meta-line';
+    metaLine.innerHTML = 'sha256: <code>' + escapeHtml(a.sha256) + '</code>';
+    body.appendChild(metaLine);
+
+    // Per-archive notes display
+    const n = archiveNotes(a.name);
+    if (n && Object.keys(n).length) {
+      const notesDiv = document.createElement('div');
+      notesDiv.className = 'arch-notes-inline';
+      const parts = [];
+      if (n.description) parts.push('<div><strong>Description:</strong> ' + escapeHtml(n.description) + '</div>');
+      if (n.tags && n.tags.length) parts.push('<div>' + n.tags.map(t => '<span class="tag">' + escapeHtml(t) + '</span>').join('') + '</div>');
+      if (n.expires_at) {
+        const st = expirationStatus(n);
+        parts.push('<div><span class="status-badge status-' + st.kind + '">' + escapeHtml(st.label) + '</span>' +
+                   (n.expiration_note ? ' — ' + escapeHtml(n.expiration_note) : '') + '</div>');
+      }
+      notesDiv.innerHTML = parts.join('');
+      body.appendChild(notesDiv);
+    }
+
+    const treeWrap = document.createElement('div');
+    treeWrap.className = 'tree';
+    treeWrap.appendChild(preFilteredTree || renderNodeLazy(a.tree, true));
+    body.appendChild(treeWrap);
+    det.appendChild(body);
+  }
+  if (filterText) {
+    renderBody();
+  } else {
+    det.addEventListener('toggle', () => { if (det.open) renderBody(); });
+  }
+  return det;
 }
 
 // ---------- meta section: shipped destination + notes display ----------
@@ -502,30 +587,43 @@ function renderMeta() {
   el.innerHTML = parts.join('');
 }
 
-// ---------- edit-notes modal: open / populate / save (FSA → download fallback) ----------
-function openModal() {
-  document.getElementById('n-description').value = NOTES.description || '';
-  document.getElementById('n-pi').value = NOTES.pi || '';
-  document.getElementById('n-contact').value = NOTES.contact || '';
-  document.getElementById('n-tags').value = (NOTES.tags || []).join(', ');
-  document.getElementById('n-expires').value = NOTES.expires_at || '';
-  document.getElementById('n-expnote').value = NOTES.expiration_note || '';
+// ---------- edit-notes modal (collection OR per-archive) ----------
+function openModal(target) {
+  // target: { kind: 'collection' } OR { kind: 'archive', name: '<name>' }
+  editTarget = target || { kind: 'collection' };
+  const data = editTarget.kind === 'collection' ? NOTES : archiveNotes(editTarget.name);
+  document.getElementById('n-description').value = data.description || '';
+  document.getElementById('n-pi').value = data.pi || '';
+  document.getElementById('n-contact').value = data.contact || '';
+  document.getElementById('n-tags').value = (data.tags || []).join(', ');
+  document.getElementById('n-expires').value = data.expires_at || '';
+  document.getElementById('n-expnote').value = data.expiration_note || '';
+  // Collection has PI/contact fields; per-archive notes don't.
+  const collectionOnly = document.getElementById('collection-only-fields');
+  collectionOnly.style.display = editTarget.kind === 'collection' ? '' : 'none';
+  document.getElementById('modal-title').textContent =
+    editTarget.kind === 'collection'
+      ? 'Edit collection notes'
+      : 'Edit notes for ' + editTarget.name;
   document.getElementById('save-hint').style.display = 'none';
   document.getElementById('modal').classList.add('show');
 }
 function closeModal() { document.getElementById('modal').classList.remove('show'); }
-function collectNotes() {
+
+function collectNotesFromForm() {
   const tagsRaw = document.getElementById('n-tags').value.trim();
   const tags = tagsRaw ? tagsRaw.split(/[,;]+/).map(t => t.trim()).filter(Boolean) : [];
   const out = {};
   const desc = document.getElementById('n-description').value.trim();
-  const pi   = document.getElementById('n-pi').value.trim();
-  const ct   = document.getElementById('n-contact').value.trim();
   const exp  = document.getElementById('n-expires').value;
   const expn = document.getElementById('n-expnote').value.trim();
   if (desc) out.description = desc;
-  if (pi) out.pi = pi;
-  if (ct) out.contact = ct;
+  if (editTarget.kind === 'collection') {
+    const pi = document.getElementById('n-pi').value.trim();
+    const ct = document.getElementById('n-contact').value.trim();
+    if (pi) out.pi = pi;
+    if (ct) out.contact = ct;
+  }
   if (tags.length) out.tags = tags;
   if (exp) out.expires_at = exp;
   if (expn) out.expiration_note = expn;
@@ -533,8 +631,24 @@ function collectNotes() {
 }
 
 async function saveNotes() {
-  const newNotes = collectNotes();
-  const json = JSON.stringify(newNotes, null, 2);
+  const newData = collectNotesFromForm();
+  let mergedNotes;
+  if (editTarget.kind === 'collection') {
+    // Replace collection-level fields; preserve archives sub-object.
+    mergedNotes = { ...newData };
+    if (NOTES.archives) mergedNotes.archives = NOTES.archives;
+  } else {
+    // Update a single archive's entry under archives.<name>.
+    mergedNotes = { ...NOTES };
+    if (!mergedNotes.archives) mergedNotes.archives = {};
+    mergedNotes.archives = { ...mergedNotes.archives };
+    if (Object.keys(newData).length === 0) {
+      delete mergedNotes.archives[editTarget.name];
+    } else {
+      mergedNotes.archives[editTarget.name] = newData;
+    }
+  }
+  const json = JSON.stringify(mergedNotes, null, 2);
   const hint = document.getElementById('save-hint');
   hint.style.display = 'block';
 
@@ -548,8 +662,9 @@ async function saveNotes() {
       const writable = await handle.createWritable();
       await writable.write(json);
       await writable.close();
-      NOTES = newNotes;
+      NOTES = mergedNotes;
       renderMeta();
+      renderArchivesMain();
       hint.textContent = 'Saved directly to disk. The catalog will reflect this on the next regen.';
       setTimeout(closeModal, 1200);
       return;
@@ -559,15 +674,16 @@ async function saveNotes() {
     }
   }
 
-  // Fallback: download the file. User saves it next to summary.json on HIVE.
+  // Fallback: download the file.
   const blob = new Blob([json], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url; a.download = 'notes.json';
   document.body.appendChild(a); a.click(); a.remove();
   URL.revokeObjectURL(url);
-  NOTES = newNotes;
+  NOTES = mergedNotes;
   renderMeta();
+  renderArchivesMain();
   hint.innerHTML =
     "Downloaded notes.json. Save it as <code>notes.json</code> in this collection's folder on HIVE " +
     "(next to summary.json), then ask the operator to re-run <code>tape-archive index</code>.";
@@ -595,28 +711,12 @@ function setupClipboard() {
   });
 }
 
-function setupArchiveClickHandlers() {
-  document.getElementById('tree').addEventListener('click', e => {
-    const link = e.target.closest('.arch-link');
-    if (!link) return;
-    e.preventDefault();
-    const name = link.dataset.archive;
-    document.querySelectorAll('.archive-row.highlight').forEach(el => el.classList.remove('highlight'));
-    const target = document.getElementById('arch-' + name);
-    if (target) {
-      target.classList.add('highlight');
-      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-  });
-}
-
 function init() {
   renderMeta();
-  renderTree();
-  renderArchives();
-  setupArchiveClickHandlers();
+  renderArchivesMain();
   setupClipboard();
-  document.getElementById('edit-notes-btn').addEventListener('click', openModal);
+  document.getElementById('edit-notes-btn').addEventListener('click',
+    () => openModal({ kind: 'collection' }));
   document.getElementById('save-notes-btn').addEventListener('click', saveNotes);
   document.getElementById('cancel-notes-btn').addEventListener('click', closeModal);
   document.getElementById('modal').addEventListener('click', (e) => {
@@ -627,8 +727,8 @@ function init() {
   f.addEventListener('input', () => {
     clearTimeout(t);
     t = setTimeout(() => {
-      filterText = f.value.trim();
-      renderTree();
+      filterText = f.value.trim().toLowerCase();
+      renderArchivesMain();
     }, 200);
   });
 }
