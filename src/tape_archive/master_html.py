@@ -12,9 +12,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-def render_master_index(catalog_root: Path, output_path: Path) -> None:
+def render_master_index(catalog_root: Path, output_path: Path, *, refresh_catalogs: bool = True) -> None:
     catalog_root = Path(catalog_root).resolve()
     collections = _scan_collections(catalog_root)
+    if refresh_catalogs:
+        # Re-render each per-collection catalog so the "Back to index" link
+        # uses the right number of `..` segments for its depth under the root.
+        from .catalog_html import render_catalog as _render_catalog
+        for c in collections:
+            rel = c["dir_name"]                       # e.g. "arianne/group1/project_a"
+            depth = rel.count("/") + 1                # how many levels under catalog_root
+            index_url = "/".join([".."] * depth) + "/index.html"
+            coll_dir = catalog_root.joinpath(*rel.split("/"))
+            try:
+                _render_catalog(coll_dir, coll_dir / "catalog.html", index_url=index_url)
+            except FileNotFoundError:
+                pass  # collection had no manifests/, skip
     collections.sort(key=lambda c: c.get("compressed_at", ""), reverse=True)
 
     totals = {

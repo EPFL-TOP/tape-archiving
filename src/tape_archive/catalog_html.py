@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-def render_catalog(output_dir: Path, html_path: Path) -> None:
+def render_catalog(output_dir: Path, html_path: Path, *, index_url: str = "../index.html") -> None:
     output_dir = Path(output_dir)
     manifests = _load_manifests(output_dir / "manifests")
     if not manifests:
@@ -40,6 +40,7 @@ def render_catalog(output_dir: Path, html_path: Path) -> None:
     doc = doc.replace("__TOTAL_SOURCE_BYTES__", str(tree["size_subtree"]))
     doc = doc.replace("__TOTAL_FILES__", str(tree["file_count_subtree"]))
     doc = doc.replace("__TOTAL_ARCHIVES__", str(len(manifests)))
+    doc = doc.replace("__INDEX_URL__", html.escape(index_url))
     html_path.write_text(doc, encoding="utf-8")
 
 
@@ -237,8 +238,16 @@ button.copy.copied { background: #d4ecdc; color: #1a6c3b; }
 .modal textarea { resize: vertical; min-height: 60px; }
 .modal .row { display: flex; gap: 10px; margin-top: 14px; }
 .modal .row button { flex: 1; padding: 8px; }
+.nav-bar { background: var(--card); border: 1px solid var(--border);
+           border-radius: 8px; padding: 8px 14px; margin-bottom: 12px;
+           font-size: 0.9em; }
+.nav-bar a { color: var(--accent); text-decoration: none; font-weight: 600; }
+.nav-bar a:hover { text-decoration: underline; }
 </style>
 </head><body>
+<div class="nav-bar">
+  <a href="__INDEX_URL__">← Back to lab archives index</a>
+</div>
 <header>
   <h1>tape-archive catalog</h1>
   <p>Source: <code>__SOURCE_ROOT__</code></p>
@@ -560,8 +569,8 @@ async function saveNotes() {
   NOTES = newNotes;
   renderMeta();
   hint.innerHTML =
-    'Downloaded notes.json. Save it as <code>notes.json</code> in this collection\\'s folder on HIVE ' +
-    '(next to summary.json), then ask the operator to re-run <code>tape-archive index</code>.';
+    "Downloaded notes.json. Save it as <code>notes.json</code> in this collection's folder on HIVE " +
+    "(next to summary.json), then ask the operator to re-run <code>tape-archive index</code>.";
 }
 
 // ---------- click-to-copy restore commands ----------

@@ -110,6 +110,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_catalog.add_argument("output_dir", help="Output directory containing manifests/ subdir")
     p_catalog.add_argument("-o", "--output", default=None, help="Output HTML path (default: <output_dir>/catalog.html)")
+    p_catalog.add_argument("--index-url", default="../index.html",
+                           help="Relative URL of the master index for the 'back' link (default: ../index.html)")
     p_catalog.add_argument("-v", "--verbose", action="store_true")
 
     p_index = sub.add_parser(
@@ -306,7 +308,7 @@ def main(argv: list[str] | None = None) -> int:
         from .catalog_html import render_catalog
         out_dir = Path(args.output_dir)
         html_out = Path(args.output) if args.output else (out_dir / "catalog.html")
-        render_catalog(out_dir, html_out)
+        render_catalog(out_dir, html_out, index_url=args.index_url)
         print(f"wrote {html_out}", file=sys.stderr)
         return 0
 
