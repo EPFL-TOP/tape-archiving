@@ -105,159 +105,240 @@ The same path is reachable two ways:
 
 ---
 
-## One collection, end-to-end: `Ece-thesis-paper`
+## One collection, end-to-end: `Ece-thesis-movies`
+
+The full lifecycle for one collection, using the same paths you've been
+using. Every step is resumable and idempotent — interrupted runs can be
+restarted with the same command.
 
 ### 0. jetraw downloads to NAS
 
 You handle this. End state: source files live at
-`nas_rcp:upoates/common/UPOATES_DATA_ARCHIVES/TOTAPE/Ece-thesis-paper/`.
+`nas_rcp:upoates/common/UPOATES_DATA_ARCHIVES/TOTAPE/Ece-thesis-movies/`.
 
-### 1. Plan — local server
+### 1. Plan — local Windows server
 
-```bash
-# On the local server, in tmux (this is the only big-read on the NAS):
-tmux new -s plan-ECE
-conda activate tape-archive
+```cmd
+:: on the local Windows server, in the conda env:
+conda activate jetraw
 
-SRC=/mnt/nas/upoates/common/UPOATES_DATA_ARCHIVES/TOTAPE/Ece-thesis-paper
-NAME=Ece-thesis-paper
-STAGING=/local/staging/$NAME       # local SSD; needs ≈ compressed size
-
-tape-archive planner $SRC -o /tmp/planner-$NAME.html
+tape-archive planner ^
+  Z:\common\UPOATES_DATA_ARCHIVES\TOTAPE\Ece-thesis-movies ^
+  -o planner_ECE.html
 ```
 
-Copy `planner-$NAME.html` somewhere you can open in a browser (scp, USB, web
-server, whatever). In the browser:
+Open `planner_ECE.html` in a browser:
 
-1. Tick the folders you want to be archive roots (the per-experiment dirs are
-   usually the natural choice).
+1. Tick the folders you want as archive roots (per-experiment dirs are the
+   natural choice — produces one `.tar` per experiment).
 2. Edit names if needed.
 3. Click **Download plan.yaml**.
-4. Move the downloaded `plan.yaml` back to the local server as `plan_ECE.yaml`.
+4. Rename the downloaded file: `move %USERPROFILE%\Downloads\plan.yaml plan_ECE.yaml`.
 
-### 2. Compress — local server
+### 2. Compress — local Windows server
 
-```bash
-# Still in tmux:
-tape-archive compress plan_ECE.yaml \
-  -o $STAGING \
-  --zstd-level 3 \
-  --parallel 8 \
+Long-running (~24 h for 12 TB at `--zstd-level 3`); use a separate cmd window
+or run with `start /B` so you can keep working.
+
+```cmd
+tape-archive compress plan_ECE.yaml ^
+  -o G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\Ece-thesis-movies ^
+  --zstd-level 3 ^
+  --parallel 8 ^
   -v
 ```
 
-- `--zstd-level 3` is locked in (you measured: zstd 9 buys 1.8 % extra
-  compression for 4.4× CPU; not worth it on a 12.4 TB dataset).
-- `--parallel N` runs N archives concurrently in separate processes. Pick N
-  based on (a) cores you can spare and (b) how many concurrent NAS reads the
-  server can sustain. Start with 4–8.
-- Resumable: re-run after an interruption; archives with a complete manifest
-  are skipped. Pass `--force` to rebuild a specific one.
-- Single archive at a time, useful for partial runs or debugging:
-  `--archive 210131ablation` (repeatable).
+- `--zstd-level 3` is locked in — measured 3.4× ratio; zstd 9 buys 1.8 %
+  extra for 4.4× the CPU on this data.
+- `--parallel 8` compresses 8 archives concurrently. Tune based on cores
+  available and NAS read throughput.
+- Resumable: re-running skips archives whose manifest already exists. Pass
+  `--force --archive <name>` to rebuild a specific one.
+- The temp file used during compression now sits on the same volume as
+  `-o`, so disk-full errors will be on the output volume — easy to spot.
 
-Output under `$STAGING`:
+Output under `G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\Ece-thesis-movies\`:
 
 ```text
-/local/staging/Ece-thesis-paper/
-  plan.yaml
-  archives/*.tar
-  manifests/*.json
-  catalog.html
-  summary.json
+plan.yaml
+summary.json
+catalog.html
+archives\*.tar             ← removed after ship+verify (step 7)
+manifests\*.json           ← stays forever; the on-disk catalog
 ```
 
-Quick local sanity check before pushing:
+### 3. Verify locally — local Windows server
 
-```bash
-tape-archive verify $STAGING        # re-hashes every .tar against its manifest
+Re-hash every `.tar` and compare against its manifest's `archive_sha256`.
+Cheap (just disk reads), catches anything botched during compression.
+
+```cmd
+tape-archive verify G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\Ece-thesis-movies
 ```
 
-### 3. Ship to tape — SCITAS
+Expect: `checked N archive(s), 0 failure(s)`. If anything fails, rebuild
+just that archive:
 
-No "push to NAS" step. The compress output already sits on HIVE at the same
-path that SCITAS reaches via `hive-project02:`. `ship` pulls from there
-directly into `/work`, then rsyncs to `/archive`.
+```cmd
+tape-archive compress plan_ECE.yaml ^
+  -o G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\Ece-thesis-movies ^
+  --force --archive <name-of-failed-archive> --zstd-level 3 -v
+```
+
+Then re-run verify until clean.
+
+### 4. Smoke-test one archive end-to-end — local Windows server
+
+`verify` checks the .tar's outer sha256; this step actually decompresses one
+archive and verifies the per-file sha256s. If this passes on one archive,
+every other archive built by the same compress run is trustworthy.
+
+Pick a mid-sized one (small enough to finish in a few minutes):
+
+```cmd
+tape-archive restore ^
+  G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\Ece-thesis-movies\archives\210131ablation.tar ^
+  -o G:\TMP\smoke-test ^
+  --parallel 4 -v
+
+:: cleanup after:
+rmdir /S /Q G:\TMP\smoke-test
+```
+
+Pass means: tar opens, every `.zst` decompresses cleanly (zstd frame CRC),
+and every decompressed file's sha256 matches the manifest. Exit code 0 +
+`failed=0`. If anything fails, the offending file is named and you can dig in.
+
+### 5. Ship to tape — SCITAS
+
+The compress output already sits on HIVE at the same path SCITAS reaches via
+the `hive-project02:` rclone remote. `ship` pulls each archive into `/work`,
+verifies on /work, rsyncs to `/archive`, verifies on /archive, deletes the
+/work copy. All automatic.
 
 ```bash
-# On SCITAS, in tmux (this is the long step):
+# on SCITAS, in tmux (this can run for hours):
 tmux new -s ship-ECE
 conda activate jetraw
 module load rclone
 
-NAME=Ece-thesis-movies
 tape-archive ship \
-  --nas  hive-project02:PROJECTS-02/Clement/TMP-ARCHIVE-TO_SCITAS/$NAME \
-  --work /work/upoates/ship/$NAME \
-  --tape /archive/upoates/lab-archives/$NAME \
+  --nas  hive-project02:PROJECTS-02/Clement/TMP-ARCHIVE-TO_SCITAS/Ece-thesis-movies \
+  --work /work/upoates/ship/Ece-thesis-movies \
+  --tape /archive/upoates/lab-archives/Ece-thesis-movies \
   --batch-budget-gb 17000 \
   -v
 ```
 
 (The flag is called `--nas` for historical reasons but accepts any rclone
-remote path. Here it points at HIVE.)
+remote path — here it points at HIVE.)
 
-What ship does, one archive at a time:
+`--batch-budget-gb 17000` refuses to start an archive that would push
+`/work` past 17 TB (defensive cap under the 20 TB quota). Resumable:
+interrupt anytime, re-run — archives already on tape with the right sha256
+are skipped.
 
-1. Skip if the tar is already on `--tape` with matching sha256.
-2. `rclone copy` tar + manifest from HIVE into `/work`.
-3. SHA-256 the tar on `/work`, compare to manifest. Mismatch → leave for inspection, move on.
-4. `rsync` to `/archive`.
-5. SHA-256 on `/archive`, compare. Mismatch → leave both copies in place, fail.
-6. `rm` from `/work`.
+When ship completes cleanly (no failures), it writes a `shipped.json` back
+to HIVE via rclone — recording the tape path, timestamp, and host. The
+catalog and master index will pick this up at next regen / next reload.
 
-Resumable: interrupt anytime, re-run, it picks up where it left off (presence
-on tape with correct sha256 = shipped).
+### 6. (One-off) Backfill `shipped.json` if you shipped before this feature
 
-`--batch-budget-gb 17000` refuses to start an archive that would push `/work`
-past 17 TB — defensive cap on the 20 TB quota.
+If a collection was shipped before `tape-archive ship` learned to write
+`shipped.json` (Ece's case during early testing), do it manually once:
 
-### 4. Clean the HIVE archives — local server (any machine that can write to HIVE)
+```cmd
+:: on the local Windows server:
+tape-archive mark-shipped ^
+  G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\Ece-thesis-movies ^
+  --tape /archive/upoates/lab-archives/Ece-thesis-movies
+```
 
-Once `ship` has reported `failed=0`, the HIVE copy of `archives/` is
-redundant — tape is the home now. Delete it; keep everything else (the
-catalog: `manifests/` + `catalog.html` + `summary.json` + `plan.yaml`).
+Writes `shipped.json` directly into the collection's HIVE folder. Skip this
+step for any future collection — `ship` does it automatically.
+
+### 7. Re-verify on tape side (optional belt-and-suspenders)
+
+`ship` already verifies on /archive before deleting from /work, but if you
+want a paper trail or some time has passed:
+
+```bash
+# on SCITAS:
+tape-archive verify \
+  --archives /archive/upoates/lab-archives/Ece-thesis-movies \
+  --manifests hive-project02:PROJECTS-02/Clement/TMP-ARCHIVE-TO_SCITAS/Ece-thesis-movies/manifests
+```
+
+(The manifests dir can be on rclone — pull a thin copy first or run from a
+host that has HIVE mounted directly.)
+
+### 8. Clean the HIVE archives — local Windows server
+
+Once `ship` and the tape verify both pass, the HIVE copy of `archives/` is
+redundant — tape is the home. Delete it; keep everything else (the catalog:
+`manifests/` + `catalog.html` + `summary.json` + `plan.yaml` + `shipped.json`).
 
 ```cmd
 :: from the local Windows server:
 rmdir /S /Q G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\Ece-thesis-movies\archives
 ```
 
-Or from any machine with rclone access:
+`ship` doesn't do this automatically — by design, so you can personally
+confirm the tape ingest before letting the HIVE copy go.
 
-```bash
-rclone purge hive-project02:PROJECTS-02/Clement/TMP-ARCHIVE-TO_SCITAS/Ece-thesis-movies/archives
-```
-
-`ship` doesn't do this automatically — by design, since you wanted to keep
-the HIVE archives around until you've personally confirmed the tape ingest.
-
-### 5. Regenerate the master index
-
-The master `index.html` aggregates every collection under
-`TMP-ARCHIVE-TO_SCITAS/` into one clickable page. Walks recursively, so
-nested layouts (`group/project/<name>`) work too.
+### 9. Regenerate the master index — local Windows server
 
 ```cmd
-:: on the local Windows server, in the conda env:
 tape-archive index G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS ^
   -o G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\index.html
 ```
 
-That's it — the index file lands next to the per-collection folders on HIVE.
+This walks the tree recursively (so nested layouts work too), aggregates
+each collection's `summary.json` + `shipped.json` + `notes.json` into the
+master `index.html`, and rewrites each per-collection `catalog.html` with
+the right depth-aware `← Back to lab archives index` link.
 
-Biologists open
-`G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS\index.html` (or via whatever
-URL/share path HIVE is exposed under in their environment) → click the
-`Ece-thesis-movies` card → browse the file tree → see which `.tar` to pull
-from tape.
+### 10. Browse & annotate via `tape-archive serve` — local Windows server
+
+For zero-prompt note editing from the browser, run the local HTTP server
+and open the URL it prints (do NOT double-click the .html file from
+Explorer — that opens via `file://` which can't save directly):
+
+```cmd
+tape-archive serve G:\PROJECTS-02\Clement\TMP-ARCHIVE-TO_SCITAS
+:: -> http://127.0.0.1:8080/index.html
+```
+
+Open `http://127.0.0.1:8080/index.html` in any browser. At the top of every
+page you'll see one of:
+
+- 🟢 **connected to `tape-archive serve` — saves write directly**
+- 🟠 opened via `file://` — saves will prompt (run serve for direct writes)
+
+When 🟢:
+
+1. Click `Ece-thesis-movies` card → opens that collection's catalog.
+2. Click **✎ Edit notes** in the header (collection-level) → modal with
+   description, PI, contact, tags, expires_at fields → **Save**.
+3. Click any archive's `▸` to expand it; click its **✎ notes** button for
+   archive-specific description and tags → **Save**.
+
+Every save:
+
+- Writes `notes.json` straight to the right HIVE folder
+- Re-renders the catalog HTML so reloads (HTTP or file://) show the changes
+- The master index also picks up changes via `fetch` at next reload
+
+`Ctrl-C` the serve terminal when you're done. For permanent PI access from
+their own workstation, swap `--bind 0.0.0.0` and open your chosen port in
+the firewall.
 
 ---
 
 ## Next collection
 
-Same procedure with a new `NAME`, new plan. Step 5 picks up the new card
-automatically.
+Same procedure with a new `NAME`, new plan. Step 9 (the master index
+regen) picks up the new card automatically; no other config changes needed.
 
 ---
 

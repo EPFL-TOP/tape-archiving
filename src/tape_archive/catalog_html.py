@@ -174,6 +174,26 @@ main { background: var(--card); border: 1px solid var(--border);
 #filter { width: 100%; padding: 8px 10px; margin-bottom: 12px;
           border: 1px solid var(--border); border-radius: 6px; font-size: 14px; }
 
+.archive-folder { border: 1px solid var(--border); border-radius: 6px;
+                  margin-bottom: 6px; background: #f5f7fa; }
+.archive-folder > summary {
+  cursor: pointer; padding: 8px 12px; list-style: none;
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;
+}
+.archive-folder > summary:hover { background: #ecf0f4; }
+.archive-folder > summary::-webkit-details-marker { display: none; }
+.archive-folder > summary::before { content: '▸'; display: inline-block;
+                                    width: 1em; color: var(--muted);
+                                    transition: transform .1s; }
+.archive-folder[open] > summary::before { transform: rotate(90deg); }
+.archive-folder .folder-icon { color: var(--accent); }
+.archive-folder .folder-name { font-weight: 600;
+                               font-family: ui-monospace, Menlo, monospace; }
+.archive-folder .folder-stats { color: var(--muted); font-size: 0.88em;
+                                margin-left: auto; }
+.archive-folder .folder-body { padding: 4px 6px 8px 20px;
+                               border-top: 1px solid var(--border); }
+
 .archive-section { border: 1px solid var(--border); border-radius: 6px;
                    margin-bottom: 8px; background: #fcfcfd; }
 .archive-section > summary {
@@ -422,17 +442,133 @@ function archiveNotes(name) {
   return (NOTES.archives && NOTES.archives[name]) || {};
 }
 
+// Split an archive name on '__' (which the planner generates from '/' in the
+// source path). Recovers the original folder hierarchy.
+function archivePathSegments(name) {
+  return name.split('__').filter(s => s.length > 0);
+}
+
+// Build a tree: { folders: {name -> tree}, archives: [archive] }
+function buildArchiveHierarchy(archives) {
+  const root = { folders: {}, archives: [] };
+  for (const a of archives) {
+    const parts = archivePathSegments(a.name);
+    if (parts.length <= 1) {
+      // Flat name (or single-segment) → leaf at root
+      root.archives.push(a);
+      continue;
+    }
+    let node = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const p = parts[i];
+      if (!node.folders[p]) node.folders[p] = { folders: {}, archives: [] };
+      node = node.folders[p];
+    }
+    node.archives.push(a);
+  }
+  return root;
+}
+
+// Aggregate stats (size, file count, archive count) for a folder subtree.
+function folderTotals(node) {
+  let bytes = 0, files = 0, archives = 0;
+  for (const a of node.archives) {
+    bytes += a.size_bytes || 0;
+    files += a.file_count || 0;
+    archives += 1;
+  }
+  for (const k of Object.keys(node.folders)) {
+    const s = folderTotals(node.folders[k]);
+    bytes += s.bytes; files += s.files; archives += s.archives;
+  }
+  return { bytes, files, archives };
+}
+
 function renderArchivesMain() {
   const container = document.getElementById('archives-main');
   container.innerHTML = '';
   const tapeRoot = SHIPPED && SHIPPED.tape_root;
-  const sorted = [...ARCHIVES_DATA].sort((a, b) => b.size_bytes - a.size_bytes);
-  let shown = 0;
+
+  // Apply filter first (so the hierarchy reflects only matching archives).
+  const visibleArchives = filterText
+    ? ARCHIVES_DATA.filter(a =>
+        a.name.toLowerCase().includes(filterText) ||
+        a.tar.toLowerCase().includes(filterText) ||
+        (a.sha256 || '').toLowerCase().includes(filterText) ||
+        anyMatchInTree(a.tree, filterText))
+    : [...ARCHIVES_DATA];
+
+  if (visibleArchives.length === 0) {
+    container.innerHTML = '<div class="hint">No archives match the filter.</div>';
+    return;
+  }
+
+  const tree = buildArchiveHierarchy(visibleArchives);
+  renderHierarchyInto(container, tree, tapeRoot);
+}
+
+// Same matching conditions as renderNodeFiltered uses, so the top-level
+// filter and the per-archive tree filter stay in sync.
+function anyMatchInTree(node, text) {
+  if (node.path && node.path.toLowerCase().includes(text)) return true;
+  if ((node.files || []).some(f =>
+      f.name.toLowerCase().includes(text) ||
+      f.sha256.toLowerCase().includes(text))) return true;
+  for (const c of (node.children || [])) if (anyMatchInTree(c, text)) return true;
+  return false;
+}
+
+function renderHierarchyInto(container, node, tapeRoot) {
+  // 1. Folders first, alphabetical
+  const folderNames = Object.keys(node.folders).sort();
+  for (const fname of folderNames) {
+    container.appendChild(renderFolderNode(fname, node.folders[fname], tapeRoot));
+  }
+  // 2. Leaf archives at this level, largest first
+  const sorted = [...node.archives].sort((a, b) => (b.size_bytes || 0) - (a.size_bytes || 0));
   for (const a of sorted) {
     const section = renderArchiveSection(a, tapeRoot);
-    if (section) { container.appendChild(section); shown++; }
+    if (section) container.appendChild(section);
   }
-  if (shown === 0) container.innerHTML = '<div class="hint">No archives match the filter.</div>';
+}
+
+function renderFolderNode(name, node, tapeRoot) {
+  const det = document.createElement('details');
+  det.className = 'archive-folder';
+  if (filterText) det.open = true;  // expand all when filtering
+
+  const sum = document.createElement('summary');
+  const icon = document.createElement('span');
+  icon.className = 'folder-icon';
+  icon.textContent = '📁';
+  sum.appendChild(icon);
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'folder-name';
+  nameEl.textContent = name + '/';
+  sum.appendChild(nameEl);
+
+  const t = folderTotals(node);
+  const stats = document.createElement('span');
+  stats.className = 'folder-stats';
+  stats.textContent = `${t.archives} archive${t.archives === 1 ? '' : 's'} · ${fmtSize(t.bytes)} · ${t.files.toLocaleString()} files`;
+  sum.appendChild(stats);
+  det.appendChild(sum);
+
+  // Lazy-render children when this folder is opened.
+  let rendered = false;
+  function expand() {
+    if (rendered) return;
+    rendered = true;
+    const body = document.createElement('div');
+    body.className = 'folder-body';
+    renderHierarchyInto(body, node, tapeRoot);
+    det.appendChild(body);
+  }
+  if (det.open) expand();
+  else det.addEventListener('toggle', () => { if (det.open) expand(); });
+
+  return det;
 }
 
 function renderArchiveSection(a, tapeRoot) {
