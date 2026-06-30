@@ -283,12 +283,73 @@ button.copy.copied { background: #d4ecdc; color: #1a6c3b; }
            font-size: 0.9em; }
 .nav-bar a { color: var(--accent); text-decoration: none; font-weight: 600; }
 .nav-bar a:hover { text-decoration: underline; }
+
+.help-panel { background: #fffbea; border: 1px solid #f3d97c;
+              border-radius: 8px; margin-bottom: 12px; }
+.help-panel > summary { padding: 10px 16px; cursor: pointer;
+                        list-style: none; font-weight: 600;
+                        display: flex; align-items: center; gap: 6px; }
+.help-panel > summary:hover { background: #fff5d4; }
+.help-panel > summary::-webkit-details-marker { display: none; }
+.help-panel > summary::before { content: '▸'; display: inline-block;
+                                width: 1em; color: var(--muted);
+                                transition: transform .1s; }
+.help-panel[open] > summary::before { transform: rotate(90deg); }
+.help-panel .help-body { padding: 4px 20px 16px 32px;
+                         border-top: 1px solid #f3d97c; }
+.help-panel h4 { margin: 14px 0 4px; }
+.help-panel ol, .help-panel ul { padding-left: 22px; margin: 4px 0; }
+.help-panel li { margin-bottom: 4px; }
+.help-panel code { background: #fff; }
 </style>
 </head><body>
 <div class="nav-bar">
   <a href="__INDEX_URL__">← Back to lab archives index</a>
   <span id="serve-status" style="margin-left:14px; font-size: 0.9em;"></span>
 </div>
+
+<details class="help-panel">
+  <summary>💡 How does this work?</summary>
+  <div class="help-body">
+    <p>This page lists every archive in one collection. The actual data sits
+    on tape; this page is a browsable index so you can find what's where.</p>
+
+    <h4>📦 How files are organised</h4>
+    <ul>
+      <li>Each <strong>📦 archive</strong> below is one <code>.tar</code> file on tape.</li>
+      <li>Click an archive's <strong>▸</strong> to expand it and see the files it contains.</li>
+      <li>When archive names use double-underscores (e.g. <code>group1__project_a</code>), they're shown as <strong>📁 folders</strong> mirroring the original source layout.</li>
+    </ul>
+
+    <h4>🔍 Find a specific file</h4>
+    <ol>
+      <li>Use the <strong>filter box</strong> below to search by filename, path, or SHA-256.</li>
+      <li>Matching archives are shown with their file tree pre-filtered to matching files.</li>
+    </ol>
+
+    <h4>📥 Restore data from tape</h4>
+    <ol>
+      <li>Find the archive containing the file you want.</li>
+      <li>Click <strong>📋 copy restore</strong> on that archive's row.</li>
+      <li>Paste the command into a terminal on a machine that has <code>/archive</code> mounted (SCITAS).</li>
+      <li>The command extracts the .tar and decompresses every file, verifying SHA-256 along the way.</li>
+    </ol>
+
+    <h4>✎ Add or edit notes</h4>
+    <ul>
+      <li><strong>Collection notes</strong> (description, PI, contact, tags, expiration): click <strong>✎ Edit notes</strong> at the top of this page.</li>
+      <li><strong>Per-archive notes</strong>: expand an archive, click <strong>✎ notes</strong> on its header.</li>
+      <li>When the indicator above shows 🟢 <em>connected</em>, saves write directly to disk. Otherwise the browser will prompt for a file location or download <code>notes.json</code>.</li>
+    </ul>
+
+    <h4>What the symbols mean</h4>
+    <ul>
+      <li><strong>📁</strong> a folder grouping archives (reconstructed from the archive name)</li>
+      <li><strong>📦</strong> a single tape archive (one <code>.tar</code> file)</li>
+      <li><strong>SHA-256</strong> values are taken on the <em>original uncompressed</em> file content, so they survive any number of compress/decompress cycles</li>
+    </ul>
+  </div>
+</details>
 <header>
   <h1>tape-archive catalog</h1>
   <p>Source: <code>__SOURCE_ROOT__</code></p>

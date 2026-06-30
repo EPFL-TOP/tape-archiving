@@ -172,6 +172,24 @@ code { background: var(--code); padding: 1px 5px; border-radius: 4px;
 .status-expired { background: #fad7d6; color: #8b1f1c; }
 .status-unshipped { background: #e3e5e8; color: var(--muted); }
 .empty { color: var(--muted); text-align: center; padding: 40px; }
+.help-panel { background: #fffbea; border: 1px solid #f3d97c;
+              border-radius: 8px; margin-bottom: 16px; }
+.help-panel > summary { padding: 10px 16px; cursor: pointer;
+                        list-style: none; font-weight: 600;
+                        display: flex; align-items: center; gap: 6px; }
+.help-panel > summary:hover { background: #fff5d4; }
+.help-panel > summary::-webkit-details-marker { display: none; }
+.help-panel > summary::before { content: '▸'; display: inline-block;
+                                width: 1em; color: var(--muted);
+                                transition: transform .1s; }
+.help-panel[open] > summary::before { transform: rotate(90deg); }
+.help-panel .help-body { padding: 4px 20px 16px 32px;
+                         border-top: 1px solid #f3d97c; }
+.help-panel h4 { margin: 14px 0 4px; }
+.help-panel ol, .help-panel ul { padding-left: 22px; margin: 4px 0; }
+.help-panel li { margin-bottom: 4px; }
+.help-panel code { background: #fff; }
+
 .tabs { display: flex; gap: 4px; margin-bottom: 14px; flex-wrap: wrap; }
 .tab { background: var(--card); border: 1px solid var(--border); padding: 6px 14px;
        border-radius: 6px; cursor: pointer; font-size: 0.92em; color: var(--fg); }
@@ -186,6 +204,50 @@ code { background: var(--code); padding: 1px 5px; border-radius: 4px;
   <p id="serve-status" class="hint"></p>
   <div class="stats" id="totals"></div>
 </header>
+
+<details class="help-panel">
+  <summary>💡 How does this work?</summary>
+  <div class="help-body">
+    <p>This is the master index of every dataset we've archived to tape.
+    Each <strong>card</strong> below is one collection — a related set of
+    archives shipped together. The actual data lives on tape; this page is a
+    browsable index so anyone can find what's where without touching tape
+    until they need to.</p>
+
+    <h4>🧭 Find a collection</h4>
+    <ol>
+      <li>Scroll the cards, or use the <strong>filter box</strong> below — it
+      searches collection names, source paths, PI names, and tags.</li>
+      <li>Use the <strong>status tabs</strong> to narrow down: Active /
+      Expiring soon / Expired / Not yet on tape.</li>
+    </ol>
+
+    <h4>📥 Open a collection / find a specific file</h4>
+    <ol>
+      <li>Click any card to open that collection's catalog.</li>
+      <li>Inside, expand archives or use the filter to find the file you need.</li>
+      <li>Each archive has a <strong>📋 copy restore</strong> button — copy
+      the command, paste it into a terminal with <code>/archive</code> mounted
+      (SCITAS), and the file is back.</li>
+    </ol>
+
+    <h4>✎ Add notes to a collection</h4>
+    <ol>
+      <li>Open the card → click <strong>✎ Edit notes</strong> at the top of the catalog.</li>
+      <li>Fill in description, PI, contact, tags, expiration → <strong>Save</strong>.</li>
+      <li>Tip: the indicator at the top of every page shows whether saves
+      will land directly on disk (🟢) or download as a file (🟠).</li>
+    </ol>
+
+    <h4>What the badges mean</h4>
+    <ul>
+      <li><span style="color:#1a6c3b">●</span> <strong>Active</strong>: on tape, no expiration set or far in the future</li>
+      <li><span style="color:#8a6500">●</span> <strong>Expiring</strong>: expires within 90 days — worth a review</li>
+      <li><span style="color:#8b1f1c">●</span> <strong>Expired</strong>: past its set expiration date</li>
+      <li><span style="color:#6b7280">●</span> <strong>Not on tape</strong>: compressed but not yet shipped to tape</li>
+    </ul>
+  </div>
+</details>
 
 <input id="filter" type="text" placeholder="Filter by collection name, source path, PI, or tag… (case-insensitive)">
 
